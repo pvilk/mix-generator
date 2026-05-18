@@ -260,10 +260,18 @@
   }
 
   async function removeTrackFromPlaylist(playlistId, trackUri) {
-    await api(`/playlists/${playlistId}/tracks`, {
+    // Verbose path so callers can see what was attempted in DevTools
+    const result = await api(`/playlists/${playlistId}/tracks`, {
       method: 'DELETE',
       body: JSON.stringify({ tracks: [{ uri: trackUri }] }),
     });
+    // Spotify returns a snapshot_id on success
+    if (result && result.snapshot_id) {
+      // ok
+    } else {
+      console.warn('[api] removeTrackFromPlaylist returned no snapshot_id', result);
+    }
+    return result;
   }
 
   async function getAllPlaylistTrackUris(playlistId) {

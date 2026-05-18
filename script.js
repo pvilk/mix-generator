@@ -719,7 +719,7 @@
   async function onTrackSkipped(track) {
     const mix = findMix(activeId);
 
-    // Local record of this skip (for the overlay summary)
+    // Local record of this skip
     skipped.push({
       ts: Date.now(),
       uri: track.uri,
@@ -732,14 +732,19 @@
 
     // Remove from the active station's playlist so it stops surfacing
     if (mix && mix.spotifyUri) {
+      const pid = playlistIdFromUri(mix.spotifyUri);
       try {
-        const pid = playlistIdFromUri(mix.spotifyUri);
         await SpotifyAuth.removeTrackFromPlaylist(pid, track.uri);
         const cache = stationTrackCache[activeId];
         if (cache) cache.delete(track.uri);
+        console.log(`[skip] ✓ removed "${track.name}" from "${mix.title}" (Spotify-side)`);
       } catch (e) {
-        console.warn(`remove from station "${mix && mix.title}" failed`, e);
+        // Most likely 403 (missing scope or playlist not owned). Make this
+        // failure VERY visible since "skip should remove" is core behavior.
+        console.error(`[skip] ✗ FAILED to remove "${track.name}" from "${mix.title}":`, e.message || e);
       }
+    } else {
+      console.warn(`[skip] "${track.name}" — no station URI to remove from`);
     }
   }
 
@@ -831,6 +836,11 @@
         if (lastSeenTrack && lastSeenTrack.uri !== cur.uri) {
           const ratio = lastSeenTrack.durationMs > 0
             ? lastSeenTrack.progressMs / lastSeenTrack.durationMs : 0;
+          const verdict = ratio >= 0.85 ? 'LISTEN-THROUGH' : 'SKIP';
+          console.log(
+            `[transition] "${lastSeenTrack.name}" by ${lastSeenTrack.artist}` +
+            ` · ${(ratio * 100).toFixed(0)}% played → ${verdict}`
+          );
           if (ratio >= 0.85) onTrackListenedThrough(lastSeenTrack);
           else onTrackSkipped(lastSeenTrack);
         }
