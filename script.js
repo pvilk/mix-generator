@@ -1534,8 +1534,34 @@
       }
     }
 
-    // 3. Get current user (basic identity check)
-    await testApi('GET /me (your profile)', '/me');
+    // 3. Get current user (basic identity check) — show the actual account
+    //    email so the user can compare with their dev-app User Management
+    try {
+      const meRes = await fetch(`https://api.spotify.com/v1/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (meRes.ok) {
+        const me = await meRes.json();
+        log(`GET /me → 200 OK`, true);
+        log(`&nbsp;&nbsp;display_name: <strong>${escapeHtml(me.display_name || '?')}</strong>`, true);
+        log(`&nbsp;&nbsp;email: <strong>${escapeHtml(me.email || '?')}</strong>  ← this must match a User Management entry`, true);
+        log(`&nbsp;&nbsp;product: <strong>${escapeHtml(me.product || '?')}</strong> (must be 'premium' for SDK)`, true);
+        log(`&nbsp;&nbsp;country: ${escapeHtml(me.country || '?')}`, true);
+        log(`&nbsp;&nbsp;id: ${escapeHtml(me.id || '?')}`, true);
+      } else {
+        const text = await meRes.text();
+        log(`GET /me → ${meRes.status} ${text.slice(0, 200)}`, false);
+      }
+    } catch (e) {
+      log(`GET /me → network error: ${e.message || e}`, false);
+    }
+
+    // Also show the configured Client ID for cross-checking with the dev dashboard
+    const clientId = SpotifyAuth.getClientId();
+    if (clientId) {
+      log(`Client ID in use: <strong>${escapeHtml(clientId)}</strong>`, true);
+      log(`&nbsp;&nbsp;→ must match the app you added yourself to in dev dashboard's Users and Access`, true);
+    }
 
     // 4. Read library (user-library-read)
     const sampleTrackId = (currentTrack && currentTrack.id)
