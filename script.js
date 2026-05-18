@@ -445,8 +445,13 @@
       els.ctrlHeart.classList.toggle('--saved', wasSaved);
       els.ctrlHeart.setAttribute('aria-pressed', wasSaved ? 'true' : 'false');
       console.error('[heart] ✗ save/unsave failed:', e.message || e);
-      if (String(e.message || e).includes('403')) {
-        showAuthToast('Heart save failed (403). Revoke the app at spotify.com/account/apps and reconnect to get fresh scopes.', 'error');
+      if (String(e.message || e).includes('403') && String(e.message || e).includes('Insufficient client scope')) {
+        showAuthToast(
+          'Heart save failed (403 Insufficient client scope). This usually means your Spotify account isn\'t added to your dev app\'s "User Management" allowlist. Open developer.spotify.com/dashboard → your app → Users and Access → Add your email. No reauth needed after that.',
+          'error'
+        );
+      } else if (String(e.message || e).includes('403')) {
+        showAuthToast(`Heart save failed (403). ${e.message || e}`, 'error');
       } else {
         showAuthToast(`Heart save failed: ${e.message || e}`, 'error');
       }
@@ -1558,7 +1563,12 @@
 
     log('—');
     log('Done. Any ✗ red lines show exactly what\'s broken.');
-    log('Most common 403 cause: your Spotify account isn\'t in the dev app\'s "User Management" allowlist.');
+    log('');
+    log('"Insufficient client scope" with green-✓ scope toast = User Management allowlist issue:');
+    log('  1. developer.spotify.com/dashboard → your app');
+    log('  2. "Users and Access" section');
+    log('  3. Add your Spotify email');
+    log('  4. (No reauth needed — write calls start working immediately)');
   }
 
   function renderSettingsOverlay() {
