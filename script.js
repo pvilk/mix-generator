@@ -45,6 +45,8 @@
   const LS_SKIPPED = 'mixgen.skipped.v1';
   const LS_KNOWN_ARTISTS = 'mixgen.knownArtists.v1';
   const LS_SETTINGS = 'mixgen.settings.v1';
+  const LS_ONBOARDED = 'mixgen.onboarded.v1';
+  const LS_ONBOARDING_STEP = 'mixgen.onboarding.step';
   const DEFAULT_SETTINGS = {
     bridgeTracks: true,
     bpmLocked: false,
@@ -1014,6 +1016,13 @@
     return recentLoved[Math.floor(Math.random() * recentLoved.length)];
   }
 
+  // Bridge timings: total cap = HOLD + FADE.
+  // The bridge song plays at full volume for BRIDGE_HOLD_MS, then volume
+  // ramps to 0 over BRIDGE_FADE_MS while we hand off to the next station.
+  const BRIDGE_HOLD_MS = 27_000;     // 27s of full-volume bridge
+  const BRIDGE_FADE_MS = 3_000;      // 3s fade-out
+  const BRIDGE_TOTAL_MS = BRIDGE_HOLD_MS + BRIDGE_FADE_MS;
+
   async function startBridge(bridge, targetMix) {
     if (!sdkDeviceId) return;
     bridgeState = {
@@ -1022,48 +1031,85 @@
       bridgeArtist: bridge.artist,
       targetStation: targetMix,
       startedAt: Date.now(),
+      holdTimer: null,
+      fadeTimer: null,
+      handoffTimer: null,
     };
-    console.log(`[bridge] "${bridge.name}" by ${bridge.artist} → ${targetMix.title}`);
+    console.log(`[bridge] "${bridge.name}" by ${bridge.artist} → ${targetMix.title} (${BRIDGE_TOTAL_MS / 1000}s total)`);
 
-    // Show bridge state on the card
+    // Card feedback
     els.cardTitle.classList.remove('--swapping');
     els.cardArtist.classList.remove('--swapping');
     els.cardTitle.textContent = `→ ${targetMix.title}`;
     els.cardArtist.textContent = `bridging via ${bridge.name} · ${bridge.artist}`;
     els.stationName.textContent = `Bridging → ${targetMix.title.toUpperCase()}`;
 
-    // Play the bridge track as a one-shot (PUT /me/player/play with uris)
     try {
+      // Ensure full volume before playing
+      try { await sdkPlayer.setVolume(1.0); } catch (e) {}
+
       await SpotifyAuth.api(`/me/player/play?device_id=${sdkDeviceId}`, {
         method: 'PUT',
         body: JSON.stringify({ uris: [bridge.uri] }),
       });
       setPlayingVisual(true);
+
+      // Schedule the fade + handoff
+      bridgeState.fadeTimer = setTimeout(() => fadeOutBridge(), BRIDGE_HOLD_MS);
+      bridgeState.handoffTimer = setTimeout(() => completeBridge(), BRIDGE_TOTAL_MS);
     } catch (e) {
       console.warn('[bridge] play failed, doing direct switch', e);
-      bridgeState = null;
+      cancelBridge();
       await setStation(targetMix.id, { skipBridge: true });
     }
   }
 
-  // Called from player_state_changed — checks if the bridge just ended.
+  async function fadeOutBridge() {
+    if (!bridgeState || !sdkPlayer) return;
+    console.log('[bridge] fading out');
+    // Linear fade in ~10 steps over BRIDGE_FADE_MS
+    const STEPS = 10;
+    const stepMs = BRIDGE_FADE_MS / STEPS;
+    for (let i = STEPS - 1; i >= 0; i--) {
+      if (!bridgeState) return; // bridge cancelled mid-fade
+      const vol = i / STEPS;
+      try { await sdkPlayer.setVolume(vol); } catch (e) {}
+      await new Promise((r) => setTimeout(r, stepMs));
+    }
+  }
+
+  async function completeBridge() {
+    if (!bridgeState) return;
+    const target = bridgeState.targetStation;
+    console.log('[bridge] handoff → loading', target.title);
+    cancelBridge();
+    // Restore volume before the new station starts
+    try { await sdkPlayer.setVolume(1.0); } catch (e) {}
+    await setStation(target.id, { skipBridge: true });
+  }
+
+  function cancelBridge() {
+    if (!bridgeState) return;
+    if (bridgeState.fadeTimer) clearTimeout(bridgeState.fadeTimer);
+    if (bridgeState.handoffTimer) clearTimeout(bridgeState.handoffTimer);
+    bridgeState = null;
+  }
+
+  // Called from player_state_changed — if the bridge track ENDS naturally
+  // (rare with a 27s cap on a 3-4 min song, but possible for short tracks)
+  // we transition early instead of waiting for the timer.
   async function checkBridgeEnd(state) {
     if (!bridgeState || !state) return;
     const cur = state.track_window && state.track_window.current_track;
     const elapsed = Date.now() - bridgeState.startedAt;
     const curUri = cur && cur.uri;
 
-    // Bridge ended if: (a) track URI is no longer the bridge AND we've been
-    // playing for >5s (avoid catching the initial settle), or (b) playback
-    // is paused at position 0 after >5s (single-track playback ran out).
-    const trackChanged = curUri && curUri !== bridgeState.trackUri && elapsed > 5000;
-    const ranOut = state.paused && state.position === 0 && elapsed > 5000;
+    const trackChanged = curUri && curUri !== bridgeState.trackUri && elapsed > 3000;
+    const ranOut = state.paused && state.position === 0 && elapsed > 3000;
 
     if (trackChanged || ranOut) {
-      const target = bridgeState.targetStation;
-      console.log('[bridge] ended → loading', target.title);
-      bridgeState = null;
-      await setStation(target.id, { skipBridge: true });
+      console.log('[bridge] bridge ended naturally → handoff');
+      await completeBridge();
     }
   }
 
@@ -1080,9 +1126,215 @@
     if (kind === 'liked') renderLikedOverlay();
     else if (kind === 'connect') renderConnectOverlay();
     else if (kind === 'settings') renderSettingsOverlay();
+    else if (kind === 'wizard') renderWizardStep(getOnboardingStep());
     els.overlay.hidden = false;
   }
   function closeOverlay() { els.overlay.hidden = true; }
+
+  // ── Onboarding wizard ──
+  function isOnboarded() { return localStorage.getItem(LS_ONBOARDED) === 'true'; }
+  function markOnboarded() {
+    localStorage.setItem(LS_ONBOARDED, 'true');
+    localStorage.removeItem(LS_ONBOARDING_STEP);
+  }
+  function getOnboardingStep() {
+    return Math.max(0, Math.min(3, parseInt(localStorage.getItem(LS_ONBOARDING_STEP) || '0', 10)));
+  }
+  function setOnboardingStep(n) {
+    localStorage.setItem(LS_ONBOARDING_STEP, String(n));
+    renderWizardStep(n);
+  }
+  function maybeAutoCompleteOnboarding() {
+    // If you've already got auth + at least one station with a URI, you don't
+    // need onboarding — skip silently.
+    if (isOnboarded()) return true;
+    const hasAuth = window.SpotifyAuth && SpotifyAuth.isAuthed();
+    const hasStation = data.playlists.some((p) => p && p.spotifyUri);
+    if (hasAuth && hasStation) {
+      markOnboarded();
+      return true;
+    }
+    return false;
+  }
+
+  function wizardProgress(activeIdx) {
+    const dots = [0, 1, 2, 3].map((i) => {
+      const cls = i === activeIdx ? 'wizard-progress__dot --active'
+        : (i < activeIdx ? 'wizard-progress__dot --done' : 'wizard-progress__dot');
+      return `<span class="${cls}"></span>`;
+    }).join('');
+    return `<div class="wizard-progress">${dots}</div>`;
+  }
+
+  function renderWizardStep(n) {
+    if (n === 0) renderWizardWelcome();
+    else if (n === 1) renderWizardSpotifyApp();
+    else if (n === 2) renderWizardAuthorize();
+    else renderWizardDone();
+  }
+
+  function renderWizardWelcome() {
+    els.overlayKicker.textContent = 'Step 1 of 4 · Welcome';
+    els.overlayTitle.textContent = 'Welcome to Mix Generator';
+    els.overlayBody.innerHTML = `
+      ${wizardProgress(0)}
+      <div class="wizard-body">
+        <p>A personal radio that adapts to your taste. Three ambient rooms, a custom Spotify player, and an AI DJ behind <kbd>⌘K</kbd>.</p>
+        <p><strong>What you'll need:</strong></p>
+        <ul class="checklist">
+          <li><span class="checklist__check">◐</span><span><strong>Spotify Premium</strong> — the audio engine needs it (Free won't work)</span></li>
+          <li><span class="checklist__check">◐</span><span>A <strong>free Spotify Developer App</strong> — used as the OAuth bridge between this page and your library</span></li>
+          <li><span class="checklist__check">◐</span><span>About <strong>3 minutes</strong></span></li>
+        </ul>
+        <p>The next three steps will walk you through it.</p>
+      </div>
+    `;
+    els.overlayActions.innerHTML = '';
+    const skip = document.createElement('button');
+    skip.className = '--ghost';
+    skip.textContent = 'Skip setup';
+    skip.addEventListener('click', () => {
+      markOnboarded();
+      closeOverlay();
+    });
+    els.overlayActions.appendChild(skip);
+    const next = document.createElement('button');
+    next.className = '--primary';
+    next.textContent = 'Get started →';
+    next.addEventListener('click', () => setOnboardingStep(1));
+    els.overlayActions.appendChild(next);
+  }
+
+  function renderWizardSpotifyApp() {
+    const redirect = SpotifyAuth.REDIRECT_URI;
+    els.overlayKicker.textContent = 'Step 2 of 4 · Spotify Developer App';
+    els.overlayTitle.textContent = 'Create your Spotify App';
+    els.overlayBody.innerHTML = `
+      ${wizardProgress(1)}
+      <div class="wizard-body">
+        <p>This is a one-time setup. Spotify requires a "Developer App" to authorize a personal client like Mix Generator. It's free and takes ~90 seconds.</p>
+        <ol>
+          <li>Open <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com/dashboard</a> in another tab</li>
+          <li>Click <strong>Create app</strong> — any name and description</li>
+          <li>Under "Which API/SDKs are you planning to use?" pick <strong>Web API</strong> and <strong>Web Playback SDK</strong></li>
+          <li>Add this redirect URI <em>exactly</em>:
+            <div class="copy-row">
+              <code>${escapeHtml(redirect)}</code>
+              <button type="button" class="copy-btn" data-copy="${escapeHtml(redirect)}">Copy</button>
+            </div>
+          </li>
+          <li>Save the app, then copy your <strong>Client ID</strong> from its settings page</li>
+        </ol>
+        <div class="callout">
+          ⚠ The redirect URI uses <strong>127.0.0.1</strong>, not <strong>localhost</strong> — Spotify rejects <code>localhost</code> as a loopback redirect.
+        </div>
+      </div>
+    `;
+    // Wire copy button
+    els.overlayBody.querySelectorAll('.copy-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.copy);
+          btn.textContent = 'Copied ✓';
+          btn.classList.add('--copied');
+          setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('--copied'); }, 1500);
+        } catch (e) { console.warn('copy failed', e); }
+      });
+    });
+    els.overlayActions.innerHTML = '';
+    const back = document.createElement('button');
+    back.className = '--ghost';
+    back.textContent = '← Back';
+    back.addEventListener('click', () => setOnboardingStep(0));
+    els.overlayActions.appendChild(back);
+    const next = document.createElement('button');
+    next.className = '--primary';
+    next.textContent = 'I have my Client ID →';
+    next.addEventListener('click', () => setOnboardingStep(2));
+    els.overlayActions.appendChild(next);
+  }
+
+  function renderWizardAuthorize() {
+    const existingId = SpotifyAuth.getClientId();
+    els.overlayKicker.textContent = 'Step 3 of 4 · Authorize';
+    els.overlayTitle.textContent = 'Paste your Client ID';
+    els.overlayBody.innerHTML = `
+      ${wizardProgress(2)}
+      <div class="wizard-body">
+        <p>Paste the Client ID from your Spotify Developer App below. Clicking Authorize redirects you to Spotify's consent page — approve the requested permissions and you'll come right back here.</p>
+        <div class="field-row">
+          <label class="field-label" for="wizard-client-id">Spotify Client ID</label>
+          <input type="text" id="wizard-client-id" placeholder="e.g. 7a1c8b9e..." value="${escapeHtml(existingId || '')}" autocomplete="off" />
+        </div>
+        ${existingId ? `<div class="callout">If Spotify silently skips the consent screen (it remembers prior approvals), <a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener">remove the app at spotify.com/account/apps</a> first, then click Authorize.</div>` : ''}
+      </div>
+    `;
+    els.overlayActions.innerHTML = '';
+    const back = document.createElement('button');
+    back.className = '--ghost';
+    back.textContent = '← Back';
+    back.addEventListener('click', () => setOnboardingStep(1));
+    els.overlayActions.appendChild(back);
+    const authBtn = document.createElement('button');
+    authBtn.className = '--primary';
+    authBtn.textContent = 'Authorize ↗';
+    authBtn.addEventListener('click', async () => {
+      const input = document.getElementById('wizard-client-id');
+      const id = (input.value || '').trim();
+      if (!id) { input.focus(); return; }
+      authBtn.textContent = 'Redirecting…';
+      authBtn.disabled = true;
+      try {
+        await SpotifyAuth.startAuth(id);
+      } catch (e) {
+        authBtn.textContent = 'Failed — retry';
+        authBtn.disabled = false;
+        console.error(e);
+      }
+    });
+    els.overlayActions.appendChild(authBtn);
+  }
+
+  function renderWizardDone() {
+    const authed = SpotifyAuth.isAuthed();
+    els.overlayKicker.textContent = 'Step 4 of 4 · Ready';
+    els.overlayTitle.textContent = authed ? "You're set up" : 'Almost there';
+    els.overlayBody.innerHTML = `
+      ${wizardProgress(3)}
+      <div class="wizard-body">
+        ${authed
+          ? `<p>Spotify is connected. Your Connect device <strong>"Mix Generator · Radio"</strong> should appear in any Spotify app you have open.</p>`
+          : `<p>Looks like the Spotify connection didn't finish. You can press <strong>Back</strong> and try again — or close this and use the <strong>⌖</strong> in the corner whenever you're ready.</p>`
+        }
+        <p style="margin-top: 16px;"><strong>Three things to remember:</strong></p>
+        <div class="shortcut-grid">
+          <kbd>⌘K</kbd><span>Open the DJ — ask for "a station for…", "add more X", "remove the Y"</span>
+          <kbd>⚙</kbd><span>Settings — bridge tracks, BPM lock, album-art tint</span>
+          <kbd>⌖</kbd><span>Liked Radio Songs panel — also where you'd re-authorize</span>
+        </div>
+        <p>Stations need playlists — press <kbd>⌘K</kbd> after this and the DJ will set them up.</p>
+        <div class="callout">
+          <strong>Pro tip:</strong> Edit <code>data.js</code> by hand with your own existing playlist URIs if you'd rather not generate fresh ones. The DJ enhances any playlist over time.
+        </div>
+      </div>
+    `;
+    els.overlayActions.innerHTML = '';
+    if (!authed) {
+      const back = document.createElement('button');
+      back.className = '--ghost';
+      back.textContent = '← Back';
+      back.addEventListener('click', () => setOnboardingStep(2));
+      els.overlayActions.appendChild(back);
+    }
+    const done = document.createElement('button');
+    done.className = '--primary';
+    done.textContent = authed ? 'Start listening →' : 'Close';
+    done.addEventListener('click', () => {
+      markOnboarded();
+      closeOverlay();
+    });
+    els.overlayActions.appendChild(done);
+  }
 
   function renderLikedOverlay() {
     const authed = SpotifyAuth.isAuthed();
@@ -1210,6 +1462,18 @@
         </label>
       </div>
     `;
+    // "Replay welcome tour" link
+    const replay = document.createElement('p');
+    replay.style.cssText = 'margin-top: 18px; font-size: 12px; opacity: 0.7;';
+    replay.innerHTML = `<a href="#" id="replay-onboarding" style="color: var(--ink); text-decoration: underline;">Replay welcome tour</a>`;
+    els.overlayBody.appendChild(replay);
+    document.getElementById('replay-onboarding').addEventListener('click', (e) => {
+      e.preventDefault();
+      localStorage.removeItem(LS_ONBOARDED);
+      localStorage.setItem(LS_ONBOARDING_STEP, '0');
+      openOverlay('wizard');
+    });
+
     els.overlayActions.innerHTML = '';
     const saveBtn = document.createElement('button');
     saveBtn.className = '--primary';
@@ -1220,11 +1484,9 @@
         bpmLocked: document.getElementById('setting-bpm').checked,
         albumArtTint: document.getElementById('setting-tint').checked,
       });
-      // If tint was turned off, clear immediately
       if (!document.getElementById('setting-tint').checked) {
         els.artTint.style.backgroundColor = 'transparent';
       } else if (currentTrack) {
-        // Tint was turned on — apply to current track
         updateArtTint(currentTrack);
       }
       closeOverlay();
@@ -1516,9 +1778,12 @@
 
   // ── Boot ──
   async function boot() {
+    let cameBackFromAuth = false;
     if (window.location.search.includes('code=') || window.location.search.includes('error=')) {
-      try { await SpotifyAuth.handleCallback(); }
-      catch (e) {
+      try {
+        await SpotifyAuth.handleCallback();
+        cameBackFromAuth = true;
+      } catch (e) {
         console.error('OAuth callback failed:', e);
         alert('Spotify auth failed: ' + (e.message || e));
       }
@@ -1532,8 +1797,6 @@
       SpotifyAuth.findOrCreateLikedPlaylist().catch((e) => {
         console.warn('Could not ensure Liked Radio Songs playlist', e);
       });
-      // If the SDK script already loaded (race with our boot), init the
-      // player now. Otherwise onSpotifyWebPlaybackSDKReady will trigger it.
       if (typeof Spotify !== 'undefined' && Spotify.Player) {
         initSpotifySdk();
       }
@@ -1541,6 +1804,20 @@
 
     seedHighwayStreaks();
     setupMediaSession();
+
+    // Onboarding — show on first run, or resume from the right step after
+    // the OAuth round-trip. Skip silently for users who already have auth
+    // + at least one station set up.
+    if (!maybeAutoCompleteOnboarding()) {
+      if (cameBackFromAuth && getOnboardingStep() === 2) {
+        // User just finished the Authorize step — advance to Done
+        setOnboardingStep(3);
+        els.overlay.hidden = false;
+      } else {
+        // Fresh visit — show wizard from wherever we left off (default 0)
+        openOverlay('wizard');
+      }
+    }
   }
 
   boot();
