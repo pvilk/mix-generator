@@ -773,15 +773,18 @@
     sdkPlayer.addListener('initialization_error', ({ message }) =>
       console.error('[sdk] init error:', message));
     sdkPlayer.addListener('authentication_error', ({ message }) => {
-      console.error('[sdk] auth error:', message);
-      SpotifyAuth.clearAuth();
-      renderHotcorner();
-      // Don't yell with alert — just nudge the user to reconnect
-      openOverlay('connect');
+      // IMPORTANT: don't clear tokens or open overlay here.
+      // The SDK can fire authentication_error for reasons unrelated to the
+      // Web API (e.g. Premium not detected, app missing Web Playback SDK
+      // enabled in dev dashboard). Wiping tokens broke the heart + save
+      // surfaces that ARE working. Just log; if the user needs to re-auth
+      // they can double-click the hot corner.
+      console.error('[sdk] auth error (not clearing tokens):', message);
     });
     sdkPlayer.addListener('account_error', ({ message }) => {
-      console.error('[sdk] account error:', message);
-      // Premium required. Show as inline error on the connect overlay.
+      // Premium not detected. Web Playback SDK won't work but everything
+      // else (heart, save, playlist mutation) still does.
+      console.error('[sdk] account error — Spotify Premium required for in-browser playback:', message);
     });
     sdkPlayer.addListener('playback_error', ({ message }) =>
       console.warn('[sdk] playback error:', message));
@@ -1130,9 +1133,28 @@
       const open = document.createElement('button');
       open.className = '--primary';
       open.textContent = 'Open in Spotify ↗';
-      open.addEventListener('click', async () => {
-        const url = await SpotifyAuth.getLikedPlaylistUrl();
-        if (url) window.open(url, '_blank', 'noopener');
+      open.addEventListener('click', () => {
+        // Open a fresh tab synchronously inside the user-gesture handler so
+        // popup blockers don't eat it. Resolve the URL inline (sync), then
+        // navigate. If the playlist doesn't exist yet, kick off the ensure
+        // call and navigate when ready.
+        const url = SpotifyAuth.getLikedPlaylistUrl();
+        if (url) {
+          window.open(url, '_blank', 'noopener');
+          return;
+        }
+        const tab = window.open('about:blank', '_blank', 'noopener');
+        SpotifyAuth.findOrCreateLikedPlaylist()
+          .then((id) => {
+            const fresh = `https://open.spotify.com/playlist/${id}`;
+            if (tab && !tab.closed) tab.location.href = fresh;
+          })
+          .catch((e) => {
+            console.warn('[liked] open failed', e);
+            if (tab && !tab.closed) tab.close();
+            open.textContent = 'Failed — try again';
+            setTimeout(() => { open.textContent = 'Open in Spotify ↗'; }, 1800);
+          });
       });
       els.overlayActions.appendChild(open);
     } else if (!authed) {
@@ -1223,6 +1245,11 @@
     const onLocalhost = window.location.hostname === 'localhost';
 
     let html = `<p>Connects a personal Spotify Developer App so the radio can show the live track + auto-write listened-through tracks to a <strong>Liked Radio Songs</strong> playlist.</p>`;
+    if (existingId) {
+      html += `<p style="margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--ink); font-size: 12px; line-height: 1.5;">
+        <strong>Reauthorizing?</strong> If the consent screen doesn't show new permissions, <a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener">remove the app at spotify.com/account/apps</a> first, then click Authorize again.
+      </p>`;
+    }
     if (onLocalhost) {
       html += `<p style="margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--ink); font-size: 12px;">⚠ Open this page at <code>http://127.0.0.1:8765/</code> instead of <code>localhost</code> — Spotify rejects <code>localhost</code> as a redirect URI.</p>`;
     }

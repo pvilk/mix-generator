@@ -83,6 +83,10 @@
       state,
       code_challenge_method: 'S256',
       code_challenge: challenge,
+      // Force the consent screen even if the user previously authorized the
+      // app — otherwise Spotify silently re-grants the OLD scopes when we
+      // add new ones like user-library-modify.
+      show_dialog: 'true',
     });
     window.location.href = `https://accounts.spotify.com/authorize?${params}`;
   }
@@ -279,7 +283,9 @@
     await addTrackToPlaylist(id, trackUri);
   }
 
-  async function getLikedPlaylistUrl() {
+  // Sync — reads only localStorage. Returns null if the playlist hasn't
+  // been created yet (will be created on first listen-through save).
+  function getLikedPlaylistUrl() {
     const id = localStorage.getItem(LS.likedPlaylist);
     if (!id) return null;
     return `https://open.spotify.com/playlist/${id}`;
