@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DJ Claude · Radio</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="apple-touch-icon" href="/favicon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Anton&family=Montserrat:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Scenes (only the active station's scene is visible) -->
+  <div class="scenes" id="scenes">
+
+    <!-- HIGHWAY: Late Night Drive -->
+    <section class="scene scene--highway" data-scene="highway">
+      <div class="highway__sky"></div>
+      <div class="highway__stars"></div>
+      <div class="highway__streaks" id="streaks-host"></div>
+      <div class="highway__windshield"></div>
+      <div class="highway__dashboard"></div>
+      <div class="vignette"></div>
+    </section>
+
+    <!-- BAR: Bar at Eleven -->
+    <section class="scene scene--bar" data-scene="bar">
+      <div class="bar__wall"></div>
+      <div class="bar__lamp"></div>
+      <div class="bar__counter"></div>
+      <div class="bar__floor"></div>
+      <div class="bar__incense">
+        <svg viewBox="0 0 80 240" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+          <path class="smoke-1" d="M 40 235 Q 32 210 40 180 Q 48 150 40 120 Q 32 90 40 60 Q 48 30 40 5"
+                fill="none" stroke="rgba(244,232,207,0.20)" stroke-width="3" stroke-linecap="round" />
+          <path class="smoke-2" d="M 40 235 Q 50 215 40 190 Q 30 165 40 140 Q 50 115 40 90 Q 30 65 40 35"
+                fill="none" stroke="rgba(244,232,207,0.13)" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <div class="incense__ember"></div>
+      </div>
+      <div class="vignette"></div>
+    </section>
+
+    <!-- SUNSET: Sunset Cabin -->
+    <section class="scene scene--sunset" data-scene="sunset">
+      <div class="sunset__sky"></div>
+      <div class="sunset__stars"></div>
+      <div class="sunset__sun"></div>
+      <div class="sunset__sun-halo"></div>
+      <div class="sunset__cloud sunset__cloud--1"></div>
+      <div class="sunset__cloud sunset__cloud--2"></div>
+      <div class="sunset__cloud sunset__cloud--3"></div>
+      <div class="sunset__horizon"></div>
+      <div class="vignette"></div>
+    </section>
+
+    <!-- Always-on film grain -->
+    <div class="grain"></div>
+  </div>
+
+  <!-- Station nameplate (arrows = prev/next station, click center to cycle) -->
+  <div class="station" id="station-label">
+    <span class="station__kicker">FM 33.3 · Now Playing</span>
+    <div class="station__row">
+      <button class="station__arrow" id="station-prev" type="button" aria-label="Previous station">‹</button>
+      <h1 class="station__name" id="station-name">—</h1>
+      <button class="station__arrow" id="station-next" type="button" aria-label="Next station">›</button>
+    </div>
+    <span class="station__sub" id="station-sub">—</span>
+  </div>
+
+  <!-- Custom now-playing card -->
+  <div class="card" id="card">
+    <div class="card__art" id="card-art">
+      <span class="card__art-fallback">◐</span>
+    </div>
+    <div class="card__meta">
+      <span class="card__title" id="card-title">Click ▶ to start</span>
+      <span class="card__artist" id="card-artist">—</span>
+      <div class="card__progress">
+        <div class="card__progress-bar" id="card-progress"></div>
+      </div>
+    </div>
+    <div class="card__controls">
+      <button class="ctrl-btn ctrl-btn--heart" id="ctrl-heart" type="button" aria-label="Save to Liked Songs" aria-pressed="false">♡</button>
+      <button class="ctrl-btn" id="ctrl-prev" type="button" aria-label="Previous track">⏮</button>
+      <button class="ctrl-btn ctrl-btn--main" id="ctrl-play" type="button" aria-label="Play / pause">▶</button>
+      <button class="ctrl-btn" id="ctrl-next" type="button" aria-label="Next track">⏭</button>
+    </div>
+  </div>
+
+  <!-- Connect-Spotify prompt (only shown when audio playing + not OAuth'd) -->
+  <button class="connect-prompt" id="connect-prompt" type="button" hidden>
+    <span class="connect-prompt__dot"></span>
+    Connect Spotify for live track info + skip →
+  </button>
+
+  <!-- (audio engine is the Web Playback SDK now — no iframe needed) -->
+
+  <!-- Album-art tinted overlay (driven by current track's dominant color) -->
+  <div class="art-tint" id="art-tint" aria-hidden="true"></div>
+
+  <!-- Corner cluster: gear (settings) + hot corner (Spotify auth / saved) -->
+  <button class="gear" id="gear" type="button" aria-label="Settings">⚙</button>
+  <button class="hotcorner" id="hotcorner" type="button" aria-label="Spotify status / liked">⌖</button>
+
+  <!-- DJ Request (⌘K) -->
+  <div class="dj" id="dj" hidden>
+    <div class="dj__backdrop" id="dj-backdrop"></div>
+    <form class="dj__panel" id="dj-form" autocomplete="off">
+      <div class="dj__header">
+        <span class="dj__kicker">DJ · Request</span>
+        <span class="dj__hint">⌘K</span>
+      </div>
+      <input
+        class="dj__input"
+        id="dj-input"
+        type="text"
+        placeholder="Tell the DJ what to play…"
+        autocomplete="off"
+        autocorrect="off"
+        spellcheck="false"
+      />
+      <div class="dj__status" id="dj-status"></div>
+    </form>
+  </div>
+
+  <!-- Setup / Liked overlay -->
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay__card">
+      <button class="overlay__close" id="overlay-close" aria-label="Close">×</button>
+      <span class="overlay__kicker" id="overlay-kicker">Saved this session</span>
+      <h2 class="overlay__title" id="overlay-title">Liked Radio Songs</h2>
+      <div class="overlay__body" id="overlay-body"></div>
+      <div class="overlay__actions" id="overlay-actions"></div>
+    </div>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="auth.js"></script>
+  <script src="script.js"></script>
+  <!-- Spotify Web Playback SDK — registers this browser as its own dedicated
+       Spotify Connect device, so we don't fight the desktop app for control. -->
+  <script src="https://sdk.scdn.co/spotify-player.js"></script>
+</body>
+</html>

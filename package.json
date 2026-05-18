@@ -1,0 +1,37 @@
+{
+  "name": "dj-claude",
+  "version": "0.1.0",
+  "description": "An agent-driven personal radio for Spotify — autonomous discovery, taste learning, and natural-language playlist control. ⌘K and ask the DJ.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "spotify",
+    "radio",
+    "claude",
+    "ai",
+    "agent",
+    "music",
+    "playlist",
+    "discovery",
+    "personal-radio",
+    "mcp"
+  ],
+  "license": "MIT",
+  "files": [
+    "index.html",
+    "styles.css",
+    "script.js",
+    "auth.js",
+    "server.js",
+    "data.example.js",
+    "favicon.png",
+    "README.md",
+    "LICENSE"
+  ]
+}

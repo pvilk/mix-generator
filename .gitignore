@@ -1,0 +1,29 @@
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Node (we use zero npm deps, but just in case anyone adds them)
+node_modules/
+
+# Local env
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.iml
+.history/
+
+# User state — data.js is per-user (created from data.example.js on first run).
+# Each user's stations + Spotify URIs stay private.
+data.js
