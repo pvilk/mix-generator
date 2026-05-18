@@ -14,7 +14,12 @@ const PORT = 8765;
 const ROOT = __dirname;
 const DATA_JS = path.join(ROOT, 'data.js');
 const DATA_EXAMPLE = path.join(ROOT, 'data.example.js');
+const STATE_FILE = path.join(ROOT, 'state.json');     // per-user listening history backup (gitignored)
+const SCENES_DIR = path.join(ROOT, 'scenes');         // user-generated scenes (gitignored)
 const DJ_TIMEOUT_MS = 180_000; // 3 minutes — claude -p with MCP calls can be slow
+
+// Ensure scenes/ exists (state.json is created on first sync)
+if (!fs.existsSync(SCENES_DIR)) fs.mkdirSync(SCENES_DIR, { recursive: true });
 
 // First-run: copy data.example.js → data.js so each user has their own state.
 // data.js is gitignored; data.example.js is the template that ships with the repo.
@@ -118,13 +123,15 @@ DECIDE THE ACTION:
 1. NEW or REFRESH a station's vibe entirely → "create_station" (the server overwrites the station if id matches existing; appends if new)
 2. ADD specific tracks to an existing station (preserve the playlist, just append) → "add_tracks"
 3. REMOVE specific tracks from an existing station → "remove_tracks"
-4. Can't do it → "error"
+4. CREATE a NEW VISUAL SCENE (a new ambient room — forest, beach, basement, etc.) → "create_scene"
+5. Can't do it → "error"
 
 CHOOSING ACTION:
 - "make a station for X" / "new station: X" → create_station (new id)
 - "refresh X" / "change X to be Y" / "make X darker" → create_station (re-use X's id — overwrites)
 - "add more shoegaze to X" / "X needs more Y" / "throw in some Z" → add_tracks (search Spotify, return URIs, browser will append to the existing playlist)
 - "remove the synthwave from X" / "drop track Y from X" → remove_tracks (search to identify URIs)
+- "make me a forest scene" / "add a beach room" / "create a winter night vibe" → create_scene (generate HTML + CSS for a new ambient backdrop)
 
 CHOOSING "scene":
 - "highway" — night driving, synthwave, dark, dream-pop, lo-fi
@@ -165,7 +172,26 @@ C) REMOVE tracks from an existing station:
   "summary": "Short description of what you removed and why"
 }
 
-D) Error:
+D) CREATE a new visual scene (a new ambient "room"):
+{
+  "action": "create_scene",
+  "sceneId": "kebab-case-id",      // becomes scene='kebab-case-id' on a station
+  "label": "Display Name",
+  "description": "What it evokes (one sentence)",
+  "html": "<section class=\\"scene scene--{id}\\" data-scene=\\"{id}\\">...layered divs...</section>",
+  "css": ".scene--{id} { ... }\\n.{id}__sky { ... }\\n..."
+}
+
+SCENE CONSTRAINTS — these are hard requirements:
+- The HTML must be ONE <section> with class "scene scene--{sceneId}" and data-scene="{sceneId}". It will be appended to the existing .scenes container.
+- Inside the section: 3-5 layered divs (sky/background, midground, foreground, vignette). No JS. No <script>. No event handlers.
+- All CSS class names MUST be prefixed with the sceneId (e.g. .forest__sky, .forest__canopy) to avoid clashing with existing scenes.
+- Use CSS transforms, opacity, filter, gradient, mix-blend-mode. Animate via @keyframes.
+- Animations should feel ambient: 10-90s loops, slow drift, subtle pulse.
+- Include a vignette layer at the end: <div class="vignette"></div> — the existing class is reused.
+- Color palette should match the requested vibe.
+
+E) Error:
 {"action": "error", "message": "why"}
 
 EXECUTION TIPS:
@@ -294,6 +320,34 @@ function applyDjResult(jobId, result) {
     return;
   }
 
+  if (result.action === 'create_scene') {
+    if (!result.sceneId || !result.html || !result.css) {
+      jobs[jobId] = { ...jobs[jobId], status: 'error', error: 'create_scene missing sceneId/html/css' };
+      return;
+    }
+    const safeId = String(result.sceneId).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40);
+    if (!safeId) {
+      jobs[jobId] = { ...jobs[jobId], status: 'error', error: 'invalid sceneId' };
+      return;
+    }
+    const sceneFile = path.join(SCENES_DIR, `${safeId}.json`);
+    fs.writeFileSync(sceneFile, JSON.stringify({
+      sceneId: safeId,
+      label: result.label || safeId,
+      description: result.description || '',
+      html: result.html,
+      css: result.css,
+      createdAt: Date.now(),
+    }, null, 2));
+    console.log(`[scene] created "${safeId}" (${result.label || ''})`);
+    jobs[jobId] = {
+      ...jobs[jobId],
+      status: 'done',
+      result: { action: 'created_scene', sceneId: safeId, label: result.label || safeId },
+    };
+    return;
+  }
+
   if (result.action === 'add_tracks' || result.action === 'remove_tracks') {
     // No data.js mutation needed — server hands the track URIs back to the
     // browser, which executes the playlist mutation via its OAuth tokens.
@@ -365,6 +419,48 @@ const server = http.createServer(async (req, res) => {
       const job = jobs[id];
       if (!job) return jsonRes(res, 404, { error: 'not found' });
       return jsonRes(res, 200, job);
+    }
+
+    // POST /state/sync — back up the browser's listening state to disk
+    if (req.method === 'POST' && req.url === '/state/sync') {
+      const body = await readBody(req);
+      try {
+        const parsed = JSON.parse(body || '{}');
+        // Light validation — must be the expected shape
+        const safe = {
+          liked: Array.isArray(parsed.liked) ? parsed.liked : [],
+          skipped: Array.isArray(parsed.skipped) ? parsed.skipped : [],
+          knownArtists: Array.isArray(parsed.knownArtists) ? parsed.knownArtists : [],
+          syncedAt: Date.now(),
+        };
+        fs.writeFileSync(STATE_FILE, JSON.stringify(safe, null, 2));
+        return jsonRes(res, 200, { ok: true, syncedAt: safe.syncedAt });
+      } catch (e) {
+        return jsonRes(res, 400, { error: e.message });
+      }
+    }
+
+    // GET /state/sync — restore listening state on a fresh browser
+    if (req.method === 'GET' && req.url === '/state/sync') {
+      if (!fs.existsSync(STATE_FILE)) {
+        return jsonRes(res, 200, { liked: [], skipped: [], knownArtists: [], syncedAt: null });
+      }
+      try {
+        const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+        return jsonRes(res, 200, data);
+      } catch (e) {
+        return jsonRes(res, 500, { error: 'corrupt state file' });
+      }
+    }
+
+    // GET /scenes/index.json — list available user-generated scenes
+    if (req.method === 'GET' && req.url === '/scenes/index.json') {
+      const entries = fs.readdirSync(SCENES_DIR).filter((f) => f.endsWith('.json'));
+      const scenes = entries.map((f) => {
+        try { return JSON.parse(fs.readFileSync(path.join(SCENES_DIR, f), 'utf8')); }
+        catch (e) { return null; }
+      }).filter(Boolean);
+      return jsonRes(res, 200, { scenes });
     }
 
     // Static file

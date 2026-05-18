@@ -93,8 +93,65 @@
   function loadLocal(k) {
     try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch (e) { return []; }
   }
-  function saveLiked() { localStorage.setItem(LS_KEY, JSON.stringify(liked)); }
-  function saveSkipped() { localStorage.setItem(LS_SKIPPED, JSON.stringify(skipped)); }
+  function saveLiked() { localStorage.setItem(LS_KEY, JSON.stringify(liked)); scheduleStateSync(); }
+  function saveSkipped() { localStorage.setItem(LS_SKIPPED, JSON.stringify(skipped)); scheduleStateSync(); }
+
+  // ── Server-side persistence (backup to state.json) ──
+  // localStorage already persists across sessions/restarts on the same browser,
+  // but we ALSO mirror to disk so:
+  //   - "Clear browsing data" doesn't nuke listening history
+  //   - You can read the same history from a fresh browser on the same machine
+  //   - It survives a JSON-corruption bug in localStorage
+  // Server file: state.json (gitignored). One-way push: browser → server.
+  // On boot, if localStorage is empty, hydrate FROM the server file.
+  let stateSyncTimer = null;
+  async function scheduleStateSync() {
+    if (stateSyncTimer) clearTimeout(stateSyncTimer);
+    stateSyncTimer = setTimeout(async () => {
+      try {
+        await fetch('/state/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            liked,
+            skipped,
+            knownArtists: [...loadKnownArtists()],
+          }),
+        });
+      } catch (e) {
+        // Server might not be running, or browser tab might be closing.
+        // Either way: localStorage already has the data, so this is just a
+        // missed backup. Don't block anything on it.
+        console.warn('[state] sync failed (non-fatal)', e.message || e);
+      }
+    }, 1500);
+  }
+
+  async function hydrateStateFromServer() {
+    // Only hydrate when local is empty — server is a backup, not the truth.
+    if (liked.length > 0 || skipped.length > 0) return;
+    try {
+      const resp = await fetch('/state/sync');
+      if (!resp.ok) return;
+      const remote = await resp.json();
+      if (remote.liked && remote.liked.length > 0) {
+        liked = remote.liked;
+        localStorage.setItem(LS_KEY, JSON.stringify(liked));
+      }
+      if (remote.skipped && remote.skipped.length > 0) {
+        skipped = remote.skipped;
+        localStorage.setItem(LS_SKIPPED, JSON.stringify(skipped));
+      }
+      if (remote.knownArtists && remote.knownArtists.length > 0) {
+        saveKnownArtists(new Set(remote.knownArtists));
+      }
+      if (remote.syncedAt) {
+        console.log(`[state] hydrated from server backup (last sync: ${new Date(remote.syncedAt).toLocaleString()})`);
+      }
+    } catch (e) {
+      console.warn('[state] hydrate skipped', e.message || e);
+    }
+  }
 
   function playlistIdFromUri(uri) {
     if (!uri) return null;
@@ -549,6 +606,7 @@
   }
   function saveKnownArtists(s) {
     localStorage.setItem(LS_KNOWN_ARTISTS, JSON.stringify([...s]));
+    scheduleStateSync();
   }
 
   // Find the artist Spotify ID from a SDK current_track object. The SDK
@@ -621,6 +679,20 @@
       return;
     }
 
+    // Build a taste profile from recent listening:
+    //   FAVORED  = artist names from the last 20 listen-throughs
+    //   DISFAVORED = artist names from the last 20 skips
+    // Used to score candidates (favored = bonus, disfavored = hard veto)
+    const recentListened = liked.slice(-20);
+    const recentSkipped = skipped.slice(-20);
+    const splitArtists = (s) =>
+      String(s || '').split(',').map((a) => a.trim().toLowerCase()).filter(Boolean);
+    const favoredArtists = new Set();
+    recentListened.forEach((l) => splitArtists(l.artist).forEach((a) => favoredArtists.add(a)));
+    const disfavoredArtists = new Set();
+    recentSkipped.forEach((s) => splitArtists(s.artist).forEach((a) => disfavoredArtists.add(a)));
+    console.log(`[replenish] taste: ${favoredArtists.size} favored / ${disfavoredArtists.size} disfavored artists`);
+
     // Filter out tracks already in the station + the seed track itself
     const cache = await ensureStationTracksLoaded(activeId);
     let fresh = candidates.filter((t) =>
@@ -628,6 +700,21 @@
     );
     if (fresh.length === 0) {
       console.log('[replenish] all candidates already in station');
+      return;
+    }
+
+    // HARD VETO: if any of the candidate's artists are in the disfavored set,
+    // drop it entirely. This is the anti-skip-pattern signal.
+    const beforeVeto = fresh.length;
+    fresh = fresh.filter((t) => {
+      const artistNames = (t.artists || []).map((a) => (a.name || '').toLowerCase());
+      return !artistNames.some((n) => disfavoredArtists.has(n));
+    });
+    if (fresh.length < beforeVeto) {
+      console.log(`[replenish] vetoed ${beforeVeto - fresh.length} candidate(s) by disfavored artists`);
+    }
+    if (fresh.length === 0) {
+      console.log('[replenish] all remaining candidates were disfavored — no add');
       return;
     }
 
@@ -644,33 +731,46 @@
       }
     }
 
-    // Score: +10 if artist is new to Phil, + popularity/20, + 1 if not the seed artist
+    // Score each candidate. Composite signal:
+    //   +15  if the artist appeared in your favored set (listened through before)
+    //   +8   if it's a new-to-you artist (discovery bonus)
+    //   +1.5 if it's NOT the seed artist (variety)
+    //   +pop/20 (light popularity tilt)
+    // Skipped-artist tracks are already vetoed above — no need to score them.
     const knownArtists = loadKnownArtists();
     const scored = fresh.map((t) => {
       const firstArtist = t.artists && t.artists[0];
       const aid = firstArtist && firstArtist.uri && firstArtist.uri.split(':').pop();
+      const artistNames = (t.artists || []).map((a) => (a.name || '').toLowerCase());
+
+      const isFavored = artistNames.some((n) => favoredArtists.has(n));
       const isNew = aid && !knownArtists.has(aid);
       const isSeedArtist = aid === seedArtistId;
-      return {
-        track: t,
-        score:
-          (isNew ? 10 : 0) +              // discovery bonus
-          (t.popularity || 0) / 20 +      // light popularity weight
-          (isSeedArtist ? 0 : 1.5),       // prefer a different artist for variety
-      };
+
+      const score =
+        (isFavored ? 15 : 0) +
+        (isNew ? 8 : 0) +
+        (t.popularity || 0) / 20 +
+        (isSeedArtist ? 0 : 1.5);
+
+      return { track: t, score, isFavored, isNew };
     }).sort((a, b) => b.score - a.score);
 
-    const winner = scored[0].track;
+    const winner = scored[0];
     try {
-      await SpotifyAuth.addTrackToPlaylist(stationPid, winner.uri);
-      cache.add(winner.uri);
-      const aname = (winner.artists && winner.artists[0] && winner.artists[0].name) || '?';
-      console.log(`[replenish] + "${winner.name}" by ${aname} (score ${scored[0].score.toFixed(1)})`);
+      await SpotifyAuth.addTrackToPlaylist(stationPid, winner.track.uri);
+      cache.add(winner.track.uri);
+      const aname = (winner.track.artists && winner.track.artists[0] && winner.track.artists[0].name) || '?';
+      const tags = [
+        winner.isFavored && 'favored',
+        winner.isNew && 'new',
+      ].filter(Boolean).join('+') || 'baseline';
+      console.log(`[replenish] + "${winner.track.name}" by ${aname} (${tags}, score ${winner.score.toFixed(1)})`);
     } catch (e) {
       console.warn('[replenish] add failed', e);
     }
 
-    // Mark the seed artist as "known" — Phil has now heard them through.
+    // Mark the seed artist as "known" — they've now been heard through.
     knownArtists.add(seedArtistId);
     saveKnownArtists(knownArtists);
   }
@@ -1716,6 +1816,14 @@
         return;
       }
 
+      // created_scene → reload so the new scene is in the DOM
+      if (r.action === 'created_scene') {
+        els.djStatus.textContent = `New scene: ${r.label || r.sceneId}. Reloading…`;
+        els.djStatus.className = 'dj__status --done';
+        setTimeout(() => window.location.reload(), 1400);
+        return;
+      }
+
       // add_tracks / remove_tracks → execute mutations in browser via Web API
       if (r.action === 'add_tracks') {
         try {
@@ -1786,8 +1894,45 @@
     els.ctrlPrev.disabled = !authed;
   }
 
+  // ── Custom scenes (hot-loaded from scenes/*.json) ──
+  async function loadCustomScenes() {
+    try {
+      const resp = await fetch('/scenes/index.json');
+      if (!resp.ok) return;
+      const { scenes } = await resp.json();
+      if (!scenes || scenes.length === 0) return;
+      const host = document.getElementById('scenes');
+      for (const scene of scenes) {
+        // Don't double-inject if scene already exists in DOM (built-ins)
+        if (document.querySelector(`[data-scene="${scene.sceneId}"]`)) continue;
+        // Inject CSS — scoped <style> tag tagged with the sceneId
+        const styleEl = document.createElement('style');
+        styleEl.setAttribute('data-scene-css', scene.sceneId);
+        styleEl.textContent = scene.css;
+        document.head.appendChild(styleEl);
+        // Inject the markup — wrap to extract the <section>
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = scene.html.trim();
+        const sceneNode = wrapper.firstElementChild;
+        if (sceneNode && sceneNode.tagName === 'SECTION') {
+          host.appendChild(sceneNode);
+          console.log(`[scenes] hot-loaded "${scene.sceneId}" (${scene.label})`);
+        } else {
+          console.warn('[scenes] invalid scene HTML, skipping:', scene.sceneId);
+        }
+      }
+    } catch (e) {
+      console.warn('[scenes] custom loader failed', e.message || e);
+    }
+  }
+
   // ── Boot ──
   async function boot() {
+    // Hydrate state from server backup BEFORE we render anything
+    await hydrateStateFromServer();
+    // Load any user-generated scenes BEFORE activateScene() runs
+    await loadCustomScenes();
+
     let cameBackFromAuth = false;
     if (window.location.search.includes('code=') || window.location.search.includes('error=')) {
       try {

@@ -27,3 +27,10 @@ node_modules/
 # User state — data.js is per-user (created from data.example.js on first run).
 # Each user's stations + Spotify URIs stay private.
 data.js
+
+# Listening history backup — written by the server on every mutation, hydrated
+# from on a fresh browser. Plain JSON, portable, migrate to a real DB whenever.
+state.json
+
+# User-generated scenes (created via DJ's create_scene action). Per-user.
+scenes/
