@@ -1,6 +1,6 @@
 # Mix Generator
 
-![Late Night Drive — the Mix Generator scene at rest](./docs/hero.png)
+![Late Night Drive — the Mix Generator scene in motion](./docs/hero.gif)
 
 An agent-driven personal radio for Spotify. Three ambient rooms, a custom player, and a Claude-powered DJ behind ⌘K.
 
