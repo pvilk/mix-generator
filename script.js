@@ -1402,8 +1402,8 @@
     if (liked.length === 0) {
       html = `<p>No saves yet. Songs you let play all the way through (no skip) get filed here automatically.</p>`;
     } else if (authed) {
-      html = `<p style="font-size: 12px; opacity: 0.7;">Listened-through tracks get added to <strong>Liked Radio Songs</strong> and to the station you were on. Skipped tracks get removed from that station.</p>`;
-      html += `<ul>`;
+      html = `<p style="font-size: 12px; opacity: 0.7;">Listened-through tracks save to your Spotify <strong>Liked Songs</strong> library + the <strong>Liked Radio Songs</strong> playlist.</p>`;
+      html += `<ul class="saved-list">`;
       liked.slice().reverse().forEach((l) => {
         html += `<li>
           <span><strong>${escapeHtml(l.name || '—')}</strong> · ${escapeHtml(l.artist || '')}</span>
@@ -1412,8 +1412,8 @@
       });
       html += '</ul>';
       if (skipped.length > 0) {
-        html += `<p style="margin-top: 18px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.2em; opacity: 0.6;">Skipped — removed from station</p>`;
-        html += `<ul>`;
+        html += `<p style="margin-top: 18px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.2em; opacity: 0.6;">Recently skipped (informs discovery)</p>`;
+        html += `<ul class="saved-list">`;
         skipped.slice().reverse().slice(0, 20).forEach((s) => {
           html += `<li>
             <span style="opacity:0.65">${escapeHtml(s.name || '—')} · ${escapeHtml(s.artist || '')}</span>
