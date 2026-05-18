@@ -466,10 +466,20 @@ const server = http.createServer(async (req, res) => {
       try {
         const parsed = JSON.parse(body || '{}');
         // Light validation — must be the expected shape
+        // Preserve existing chapterBaselines if the client didn't send them
+        // (older clients). Otherwise overwrite with what the client sent.
+        let existingBaselines = {};
+        if (fs.existsSync(STATE_FILE)) {
+          try { existingBaselines = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).chapterBaselines || {}; }
+          catch (e) { /* corrupt — overwrite */ }
+        }
         const safe = {
           liked: Array.isArray(parsed.liked) ? parsed.liked : [],
           skipped: Array.isArray(parsed.skipped) ? parsed.skipped : [],
           knownArtists: Array.isArray(parsed.knownArtists) ? parsed.knownArtists : [],
+          chapterBaselines: parsed.chapterBaselines && typeof parsed.chapterBaselines === 'object'
+            ? parsed.chapterBaselines
+            : existingBaselines,
           syncedAt: Date.now(),
         };
         fs.writeFileSync(STATE_FILE, JSON.stringify(safe, null, 2));
@@ -482,7 +492,7 @@ const server = http.createServer(async (req, res) => {
     // GET /state/sync — restore listening state on a fresh browser
     if (req.method === 'GET' && req.url === '/state/sync') {
       if (!fs.existsSync(STATE_FILE)) {
-        return jsonRes(res, 200, { liked: [], skipped: [], knownArtists: [], syncedAt: null });
+        return jsonRes(res, 200, { liked: [], skipped: [], knownArtists: [], chapterBaselines: {}, syncedAt: null });
       }
       try {
         const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));

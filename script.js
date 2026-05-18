@@ -88,24 +88,36 @@
 
   // ── Chapter auto-regen state ──
   // After N listen-throughs on a station, background-trigger MCP to create a
-  // fresh playlist with the same vibe. Counter PERSISTS in localStorage so
-  // it accumulates across page reloads (otherwise it'd never reach threshold
-  // for users who restart often). Threshold is 25 — matches legacy 30-track
-  // stations and ~20% of new 120-track stations, so chapters always feel
-  // earned but never starve.
+  // fresh playlist with the same vibe. We DERIVE the counter from the
+  // persistent `liked` array (each entry has stationId) and a per-station
+  // baseline that we snapshot when a regen fires. Effective listens for a
+  // station = liked-records-for-that-station - baseline.
+  //
+  // Threshold is 25 — matches legacy ~30-track stations (regen at ~83%
+  // through) and ~20% of new 120-track stations.
   const CHAPTER_REGEN_THRESHOLD = 25;
-  const LS_CHAPTER_COUNTS = 'mixgen.chapterCounts.v1';
+  const LS_CHAPTER_BASELINES = 'mixgen.chapterBaselines.v1';
   const stationRegenInProgress = {};     // stationId → bool
   const stationsAwaitingSwap = {};       // stationId → new spotifyUri
 
-  let stationListenCounts = {};
+  let chapterBaselines = {};   // stationId → liked-count at last regen
   try {
-    stationListenCounts = JSON.parse(localStorage.getItem(LS_CHAPTER_COUNTS) || '{}');
-  } catch (e) { stationListenCounts = {}; }
+    chapterBaselines = JSON.parse(localStorage.getItem(LS_CHAPTER_BASELINES) || '{}');
+  } catch (e) { chapterBaselines = {}; }
 
-  function persistChapterCounts() {
-    localStorage.setItem(LS_CHAPTER_COUNTS, JSON.stringify(stationListenCounts));
+  function persistChapterBaselines() {
+    localStorage.setItem(LS_CHAPTER_BASELINES, JSON.stringify(chapterBaselines));
     scheduleStateSync();
+  }
+
+  function likedCountForStation(stationId) {
+    let n = 0;
+    for (const l of liked) if (l.stationId === stationId) n++;
+    return n;
+  }
+
+  function effectiveChapterCount(stationId) {
+    return likedCountForStation(stationId) - (chapterBaselines[stationId] || 0);
   }
 
   // Returns true if this track should be silently skipped because the user
@@ -158,7 +170,7 @@
             liked,
             skipped,
             knownArtists: [...loadKnownArtists()],
-            chapterCounts: stationListenCounts,
+            chapterBaselines,
           }),
         });
       } catch (e) {
@@ -187,6 +199,16 @@
       }
       if (remote.knownArtists && remote.knownArtists.length > 0) {
         saveKnownArtists(new Set(remote.knownArtists));
+      }
+      if (remote.chapterBaselines && typeof remote.chapterBaselines === 'object') {
+        // Merge baselines: take MAX so we never accidentally re-fire regen
+        // on a browser that's behind on baseline updates.
+        for (const stationId in remote.chapterBaselines) {
+          const remoteN = remote.chapterBaselines[stationId] || 0;
+          const localN = chapterBaselines[stationId] || 0;
+          chapterBaselines[stationId] = Math.max(remoteN, localN);
+        }
+        localStorage.setItem(LS_CHAPTER_BASELINES, JSON.stringify(chapterBaselines));
       }
       if (remote.syncedAt) {
         console.log(`[state] hydrated from server backup (last sync: ${new Date(remote.syncedAt).toLocaleString()})`);
@@ -639,12 +661,11 @@
         console.warn('[discover] failed', e.message || e));
     }
 
-    // 4. Tick the station's persistent listen counter; if we've crossed the
-    //    chapter threshold, kick off a background regen
+    // 4. Check if this listen-through pushes us past the chapter threshold.
+    //    Counter is DERIVED from `liked` array (just pushed above) minus the
+    //    per-station baseline, so it persists across reloads automatically.
     if (mix && mix.spotifyUri && SpotifyAuth.isAuthed()) {
-      stationListenCounts[mix.id] = (stationListenCounts[mix.id] || 0) + 1;
-      const n = stationListenCounts[mix.id];
-      persistChapterCounts();
+      const n = effectiveChapterCount(mix.id);
       if (n % 5 === 0 || n === CHAPTER_REGEN_THRESHOLD) {
         console.log(`[chapter] "${mix.title}" listen count: ${n}/${CHAPTER_REGEN_THRESHOLD}`);
       }
@@ -676,11 +697,12 @@
   // entirely since MCP uses Claude.ai's connection.
   async function triggerChapterRegen(mix) {
     stationRegenInProgress[mix.id] = true;
-    // Reset counter NOW so we don't re-trigger if the user keeps listening
-    // before the regen finishes
-    stationListenCounts[mix.id] = 0;
-    persistChapterCounts();
-    console.log(`[chapter] generating fresh chapter for "${mix.title}"…`);
+    // Snapshot baseline NOW so we don't re-trigger while regen is in flight.
+    // Effective listens drops to 0 immediately, ramps back up as user keeps
+    // listening to the (about-to-be-swapped) playlist.
+    chapterBaselines[mix.id] = likedCountForStation(mix.id);
+    persistChapterBaselines();
+    console.log(`[chapter] generating fresh chapter for "${mix.title}" (baseline=${chapterBaselines[mix.id]})…`);
     try {
       const profile = buildTasteProfile();
       const prompt =
@@ -722,19 +744,19 @@
     }
   }
 
-  // On boot, check if ANY station is already over threshold from prior
-  // sessions. If so, fire regen NOW. Otherwise the persisted counter just
-  // sits there forever, never triggering, because user keeps reloading.
+  // On boot, check every station's effective listen count (derived from
+  // hydrated `liked` records). If any is already past threshold from prior
+  // sessions, fire regen now.
   function maybeFireOverdueChapter() {
     if (!SpotifyAuth.isAuthed()) return;
-    for (const stationId in stationListenCounts) {
-      const n = stationListenCounts[stationId];
-      if (n >= CHAPTER_REGEN_THRESHOLD) {
-        const mix = findMix(stationId);
-        if (mix && mix.spotifyUri && !stationRegenInProgress[stationId]) {
-          console.log(`[chapter] "${mix.title}" was at ${n} listens from prior sessions — firing regen now`);
-          triggerChapterRegen(mix);
-        }
+    for (const mix of mixes) {
+      const n = effectiveChapterCount(mix.id);
+      if (n >= CHAPTER_REGEN_THRESHOLD
+          && mix.spotifyUri
+          && !stationRegenInProgress[mix.id]
+          && !stationsAwaitingSwap[mix.id]) {
+        console.log(`[chapter] "${mix.title}" at ${n} listens from prior sessions — firing regen now`);
+        triggerChapterRegen(mix);
       }
     }
   }
