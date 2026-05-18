@@ -1,12 +1,12 @@
-# Contributing to DJ Claude
+# Contributing to Mix Generator
 
 Pull requests welcome. The project is small enough that there's no real ceremony — open an issue or PR and we'll iterate.
 
 ## Local dev
 
 ```bash
-git clone https://github.com/<your-org>/dj-claude.git
-cd dj-claude
+git clone https://github.com/<your-org>/mix-generator.git
+cd mix-generator
 node server.js
 ```
 
@@ -31,6 +31,7 @@ Open <http://127.0.0.1:8765>. Edit any of the source files (`index.html`, `style
 | `auth.js` | Spotify PKCE flow + Web API helpers |
 | `data.js` | User-specific (gitignored); per-user station list |
 | `data.example.js` | Template copied to `data.js` on first run |
+| `examples/` | Cookbook + schema docs |
 
 ## Conventions
 
@@ -47,7 +48,7 @@ Scenes live in `index.html` (markup) + `styles.css` (animations) + are activated
 2. In `styles.css`, add `.scene--forest { background: ... }` and any sub-element animations.
 3. Stations using `scene: 'forest'` will now cross-fade to it on activation.
 
-That's it — no JS changes needed for new scenes.
+Full walkthrough in [`examples/scenes.md`](./examples/scenes.md).
 
 ## Adding a DJ action
 

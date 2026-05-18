@@ -1,4 +1,4 @@
-// DJ Claude — stations + scene config.
+// Mix Generator — stations + scene config.
 //
 // Each station drives both audio (Spotify playlist) and visual (a scene/room).
 //

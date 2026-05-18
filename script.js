@@ -325,7 +325,7 @@
       navigator.mediaSession.metadata = new MediaMetadata({
         title: track.name || '',
         artist: track.artist || '',
-        album: (findMix(activeId) && findMix(activeId).title) || 'DJ Claude',
+        album: (findMix(activeId) && findMix(activeId).title) || 'Mix Generator',
         artwork: track.artUrl
           ? [
               { src: track.artUrl, sizes: '300x300', type: 'image/jpeg' },
@@ -762,7 +762,7 @@
     console.log('[sdk] initializing player');
 
     sdkPlayer = new Spotify.Player({
-      name: 'DJ Claude · Radio',
+      name: 'Mix Generator · Radio',
       getOAuthToken: async (cb) => {
         const tok = await SpotifyAuth.getAccessToken();
         cb(tok);

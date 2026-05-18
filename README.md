@@ -1,4 +1,4 @@
-# DJ Claude
+# Mix Generator
 
 An agent-driven personal radio for Spotify. Three ambient rooms, a custom player, and a Claude-powered DJ behind ⌘K.
 
@@ -43,8 +43,8 @@ You need:
 - **Claude Code CLI** with the Spotify MCP configured — only needed for the ⌘K DJ feature, the radio works without it
 
 ```bash
-git clone https://github.com/<your-org>/dj-claude.git
-cd dj-claude
+git clone https://github.com/<your-org>/mix-generator.git
+cd mix-generator
 node server.js
 ```
 
@@ -58,7 +58,7 @@ Open **<http://127.0.0.1:8765>** — *not* `localhost`. Spotify rejects `localho
 4. Save the app. Copy the **Client ID** from the app settings page
 5. In the radio page, click the **⌖** in the bottom-right → paste your Client ID → click **Authorize**
 
-That's it. After authorize, your Spotify shows a device called *DJ Claude · Radio*. Music plays in the browser. The page can read what's playing, save to Liked Songs, add/remove tracks from your playlists, and skip / pause / play.
+That's it. After authorize, your Spotify shows a device called *Mix Generator · Radio*. Music plays in the browser. The page can read what's playing, save to Liked Songs, add/remove tracks from your playlists, and skip / pause / play.
 
 ### First-run experience
 
@@ -94,7 +94,7 @@ spotifyUrl: 'https://open.spotify.com/playlist/0LRgiYqdRA8n3OK8kWk7cQ',
 
 ### DJ examples
 
-Anything in natural language, but here are the patterns Claude knows:
+Anything in natural language, but here are the patterns Claude knows. **See [`examples/dj-commands.md`](./examples/dj-commands.md) for the full cookbook.**
 
 **Create a new station**
 - *"New station for 90s grunge"*
@@ -127,6 +127,8 @@ Over time, you don't have to spell out your taste — Claude already knows.
 - **Bridge tracks between stations** — play one familiar liked song as a transition when switching stations
 - **BPM-locked replenishment** — auto-added tracks stay within ±5 BPM of recent listens (depends on Spotify's audio-features endpoint, which is rate-limited for new apps)
 - **Album-art tinted room** — soft color overlay matching the current cover
+
+More detail in [`examples/settings.md`](./examples/settings.md).
 
 ---
 
@@ -185,6 +187,7 @@ Over time, you don't have to spell out your taste — Claude already knows.
 | `data.example.js` | Default station list shipped in the repo |
 | `data.js` | Your per-user station list (gitignored; auto-created from example on first run) |
 | `favicon.png` | Vinyl record icon |
+| `examples/` | Cookbook + schema docs ([overview](./examples/README.md)) |
 
 ---
 
@@ -192,7 +195,7 @@ Over time, you don't have to spell out your taste — Claude already knows.
 
 ### Change the default stations
 
-Edit `data.example.js` if you want a fresh-clone experience. Edit `data.js` for your local state.
+Edit `data.example.js` if you want a fresh-clone experience. Edit `data.js` for your local state. Full schema + 10 sample station configs in [`examples/stations.md`](./examples/stations.md).
 
 ### Change a station's scene
 
@@ -200,11 +203,7 @@ In `data.js`, set `scene` to `'highway'`, `'bar'`, or `'sunset'`. Each station g
 
 ### Add a new scene
 
-1. Add `<section class="scene scene--forest" data-scene="forest">` to `index.html`
-2. Style it in `styles.css` (`.scene--forest { background: ...; }`)
-3. Add stations with `scene: 'forest'` in `data.js`
-
-No JS changes needed — scene activation is data-driven.
+Walkthrough in [`examples/scenes.md`](./examples/scenes.md).
 
 ### Replace the favicon
 

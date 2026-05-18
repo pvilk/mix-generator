@@ -1,5 +1,5 @@
 {
-  "name": "dj-claude",
+  "name": "mix-generator",
   "version": "0.1.0",
   "description": "An agent-driven personal radio for Spotify — autonomous discovery, taste learning, and natural-language playlist control. ⌘K and ask the DJ.",
   "main": "server.js",
@@ -32,6 +32,7 @@
     "data.example.js",
     "favicon.png",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "examples"
   ]
 }

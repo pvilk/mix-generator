@@ -1,4 +1,4 @@
-// DJ Claude — local server.
+// Mix Generator — local server.
 // Serves static files AND runs DJ requests via `claude -p` subprocess.
 //
 // Run:  node server.js
@@ -53,7 +53,7 @@ function readData() {
 }
 
 function writeData(obj) {
-  const header = `// DJ Claude — stations + scene config.
+  const header = `// Mix Generator — stations + scene config.
 // Each station drives both audio (Spotify playlist) and visual (a scene/room).
 //
 // Schema:
@@ -99,7 +99,7 @@ When picking tracks, lean toward artists/sounds similar to LOVED. Avoid artists 
 `;
   }
 
-  return `You are the in-app DJ for "DJ Claude", a personal radio web app. The user just hit Cmd+K and typed a request. Execute it using the Spotify MCP and respond with a single JSON object — nothing else.
+  return `You are the in-app DJ for "Mix Generator", a personal radio web app. The user just hit Cmd+K and typed a request. Execute it using the Spotify MCP and respond with a single JSON object — nothing else.
 
 REQUEST:
 """
@@ -394,7 +394,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`DJ Claude       http://127.0.0.1:${PORT}/`);
+  console.log(`Mix Generator   http://127.0.0.1:${PORT}/`);
   console.log(`DJ endpoint      POST /dj  { prompt }`);
   console.log(`Claude binary    ${CLAUDE_BIN}`);
 });

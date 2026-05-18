@@ -1,6 +1,6 @@
-# DJ Claude — Agent Guide
+# Mix Generator — Agent Guide
 
-This file primes AI assistants working on DJ Claude. Read before making changes.
+This file primes AI assistants working on Mix Generator. Read before making changes.
 
 ## What this is
 
@@ -66,4 +66,4 @@ When you add a subsystem, prefix its logs:
 
 ## When in doubt
 
-Read `README.md` for the user-facing model. Read `CONTRIBUTING.md` for the dev model. This file is the agent's working contract.
+Read `README.md` for the user-facing model. Read `CONTRIBUTING.md` for the dev model. Read `examples/` for concrete recipes. This file is the agent's working contract.
