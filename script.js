@@ -430,19 +430,25 @@
     els.ctrlHeart.classList.toggle('--saved', !wasSaved);
     els.ctrlHeart.setAttribute('aria-pressed', !wasSaved ? 'true' : 'false');
     try {
-      if (wasSaved) await SpotifyAuth.removeTrackFromLibrary(currentTrack.id);
-      else await SpotifyAuth.saveTrackToLibrary(currentTrack.id);
+      if (wasSaved) {
+        await SpotifyAuth.removeTrackFromLibrary(currentTrack.id);
+        console.log(`[heart] ✓ removed "${currentTrack.name}" from Liked Songs`);
+      } else {
+        await SpotifyAuth.saveTrackToLibrary(currentTrack.id);
+        console.log(`[heart] ✓ saved "${currentTrack.name}" to Liked Songs`);
+        // Also add to Liked Radio Songs playlist (best effort)
+        SpotifyAuth.addToLikedPlaylist(currentTrack.uri).catch((e) =>
+          console.warn('[heart] add to Liked Radio Songs failed:', e.message || e));
+      }
     } catch (e) {
       // Revert on failure
       els.ctrlHeart.classList.toggle('--saved', wasSaved);
       els.ctrlHeart.setAttribute('aria-pressed', wasSaved ? 'true' : 'false');
+      console.error('[heart] ✗ save/unsave failed:', e.message || e);
       if (String(e.message || e).includes('403')) {
-        // Tokens lack the new user-library-modify scope. Open the re-auth
-        // flow directly — no jarring alert.
-        console.warn('[heart] 403 — opening re-auth overlay');
-        openOverlay('connect');
+        showAuthToast('Heart save failed (403). Revoke the app at spotify.com/account/apps and reconnect to get fresh scopes.', 'error');
       } else {
-        console.warn('save/unsave failed', e);
+        showAuthToast(`Heart save failed: ${e.message || e}`, 'error');
       }
     }
   }
@@ -566,20 +572,37 @@
     saveLiked();
     renderHotcorner();
 
-    // Save to the user's NORMAL Spotify Liked Songs (the universal heart in
-    // Your Library) — not a separate playlist. One scope, one endpoint, one
-    // well-understood place for the user to browse later.
+    const trackId = track.id || (track.uri || '').split(':').pop();
+
+    // 1. Save to user's MAIN Spotify Liked Songs library (the universal heart).
+    //    Visible in Spotify → Your Library → Liked Songs.
+    let librarySaved = false;
     try {
-      const trackId = track.id || (track.uri || '').split(':').pop();
       if (trackId) {
         await SpotifyAuth.saveTrackToLibrary(trackId);
+        librarySaved = true;
         console.log(`[liked] ✓ saved "${track.name}" by ${track.artist} to your Spotify Liked Songs`);
       }
     } catch (e) {
-      console.warn('[liked] save to Library failed:', e.message || e);
+      console.error('[liked] ✗ Library save failed:', e.message || e);
+      showAuthToast(`Save to Liked Songs failed: ${e.message || e}`, 'error');
     }
 
-    // Queue ONE discovery track for the current session — no playlist mutation.
+    // 2. Also add to the "Liked Radio Songs" playlist (radio-specific archive).
+    //    Visible in Spotify → Your Library → Playlists.
+    try {
+      await SpotifyAuth.addToLikedPlaylist(track.uri);
+      console.log(`[liked] ✓ added "${track.name}" to Liked Radio Songs playlist`);
+    } catch (e) {
+      console.warn('[liked] add to Liked Radio Songs playlist failed:', e.message || e);
+      // Only show toast if Library save ALSO failed — otherwise the user
+      // sees one error toast for one listen, the Library save worked
+      if (!librarySaved) {
+        showAuthToast(`Save to Liked Radio Songs playlist failed: ${e.message || e}`, 'error');
+      }
+    }
+
+    // 3. Queue ONE discovery track for the current session
     if (mix) {
       queueDiscoveryFromSeed(track, mix).catch((e) =>
         console.warn('[discover] failed', e.message || e));
