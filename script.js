@@ -471,22 +471,18 @@
       } else {
         await SpotifyAuth.saveTrackToLibrary(currentTrack.id);
         console.log(`[heart] ✓ saved "${currentTrack.name}" to Liked Songs`);
-        // Also add to Liked Radio Songs playlist (best effort)
-        SpotifyAuth.addToLikedPlaylist(currentTrack.uri).catch((e) =>
-          console.warn('[heart] add to Liked Radio Songs failed:', e.message || e));
       }
     } catch (e) {
-      // Revert on failure
+      // Revert the optimistic toggle on the heart icon
       els.ctrlHeart.classList.toggle('--saved', wasSaved);
       els.ctrlHeart.setAttribute('aria-pressed', wasSaved ? 'true' : 'false');
       console.error('[heart] ✗ save/unsave failed:', e.message || e);
-      if (String(e.message || e).includes('403') && String(e.message || e).includes('Insufficient client scope')) {
+      // ONE explicit user click — surface the failure once with a helpful nudge
+      if (String(e.message || e).includes('403')) {
         showAuthToast(
-          'Heart save failed (403 Insufficient client scope). This usually means your Spotify account isn\'t added to your dev app\'s "User Management" allowlist. Open developer.spotify.com/dashboard → your app → Users and Access → Add your email. No reauth needed after that.',
+          'Heart save blocked by Spotify (dev app restriction). Use ⌘K "save my session" to archive your likes via MCP instead — that path works.',
           'error'
         );
-      } else if (String(e.message || e).includes('403')) {
-        showAuthToast(`Heart save failed (403). ${e.message || e}`, 'error');
       } else {
         showAuthToast(`Heart save failed: ${e.message || e}`, 'error');
       }
@@ -614,32 +610,14 @@
 
     const trackId = track.id || (track.uri || '').split(':').pop();
 
-    // 1. Save to user's MAIN Spotify Liked Songs library (the universal heart).
-    //    Visible in Spotify → Your Library → Liked Songs.
-    let librarySaved = false;
-    try {
-      if (trackId) {
-        await SpotifyAuth.saveTrackToLibrary(trackId);
-        librarySaved = true;
-        console.log(`[liked] ✓ saved "${track.name}" by ${track.artist} to your Spotify Liked Songs`);
-      }
-    } catch (e) {
-      console.error('[liked] ✗ Library save failed:', e.message || e);
-      showAuthToast(`Save to Liked Songs failed: ${e.message || e}`, 'error');
-    }
-
-    // 2. Also add to the "Liked Radio Songs" playlist (radio-specific archive).
-    //    Visible in Spotify → Your Library → Playlists.
-    try {
-      await SpotifyAuth.addToLikedPlaylist(track.uri);
-      console.log(`[liked] ✓ added "${track.name}" to Liked Radio Songs playlist`);
-    } catch (e) {
-      console.warn('[liked] add to Liked Radio Songs playlist failed:', e.message || e);
-      // Only show toast if Library save ALSO failed — otherwise the user
-      // sees one error toast for one listen, the Library save worked
-      if (!librarySaved) {
-        showAuthToast(`Save to Liked Radio Songs playlist failed: ${e.message || e}`, 'error');
-      }
+    // Best-effort save to user's Liked Songs library. If the dev app is in
+    // Development Mode + User Management isn't propagating, this 403s — that's
+    // expected and not actionable per-track. Log only; rely on save_session
+    // (via MCP, which bypasses the dev app) for actual durable archives.
+    if (trackId) {
+      SpotifyAuth.saveTrackToLibrary(trackId)
+        .then(() => console.log(`[liked] ✓ saved "${track.name}" to Liked Songs`))
+        .catch((e) => console.warn(`[liked] auto-save 403 (expected if dev app blocked) — use ⌘K "save my session" to archive via MCP:`, e.message || e));
     }
 
     // 3. Queue ONE discovery track for the current session
