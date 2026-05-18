@@ -566,30 +566,23 @@
     saveLiked();
     renderHotcorner();
 
-    // 1. Add to global Liked Radio Songs playlist
+    // Save to the user's NORMAL Spotify Liked Songs (the universal heart in
+    // Your Library) — not a separate playlist. One scope, one endpoint, one
+    // well-understood place for the user to browse later.
     try {
-      await SpotifyAuth.addToLikedPlaylist(track.uri);
+      const trackId = track.id || (track.uri || '').split(':').pop();
+      if (trackId) {
+        await SpotifyAuth.saveTrackToLibrary(trackId);
+        console.log(`[liked] ✓ saved "${track.name}" by ${track.artist} to your Spotify Liked Songs`);
+      }
     } catch (e) {
-      console.warn('add to Liked Radio Songs failed', e);
+      console.warn('[liked] save to Library failed:', e.message || e);
     }
 
-    // 2. Add to the active station's own playlist
-    if (mix && mix.spotifyUri) {
-      try {
-        const pid = playlistIdFromUri(mix.spotifyUri);
-        const cache = await ensureStationTracksLoaded(activeId);
-        if (!cache.has(track.uri)) {
-          await SpotifyAuth.addTrackToPlaylist(pid, track.uri);
-          cache.add(track.uri);
-        }
-      } catch (e) {
-        console.warn(`add to station "${mix.title}" failed`, e);
-      }
-
-      // 3. Replenish: find a similar+discovery track and add it. Fires in
-      //    background so it never blocks playback.
-      replenishStationFromTrack(track, mix).catch((e) =>
-        console.warn('[replenish] failed', e));
+    // Queue ONE discovery track for the current session — no playlist mutation.
+    if (mix) {
+      queueDiscoveryFromSeed(track, mix).catch((e) =>
+        console.warn('[discover] failed', e.message || e));
     }
 
     inflightAdds.delete(track.uri);
@@ -614,18 +607,18 @@
     return null; // (we get the id directly inside replenish via getCurrentState)
   }
 
-  // ── Replenishment algorithm ──
-  // When Phil listens through a track, we:
-  //   1. Find the track's first artist + their genres
+  // ── Discovery queueing ──
+  // When the user listens a track all the way through, we surface ONE
+  // discovery track by queueing it via the SDK — no playlist mutation.
+  // The queued track plays next in this session. If the user likes it,
+  // they hit ♥ (saves to Liked Songs). If not, it's gone after the session.
+  //   1. Find the seed track's first artist + their genres
   //   2. Search Spotify for tracks in that genre
-  //   3. Score: prefer artists Phil hasn't heard yet (discovery), then popularity
-  //   4. Filter out anything already in the station
-  //   5. Add the highest-scoring track to the station
-  // The "known artists" set lives in localStorage so "new" actually means new.
-  async function replenishStationFromTrack(seedTrack, mix) {
-    if (!SpotifyAuth.isAuthed()) return;
-    const stationPid = playlistIdFromUri(mix.spotifyUri);
-    if (!stationPid) return;
+  //   3. Hard-veto candidates from skipped artists; bonus for favored artists
+  //   4. Bonus for new-to-you artists (discovery)
+  //   5. POST /me/player/queue?uri=<winner> — track plays next in session
+  async function queueDiscoveryFromSeed(seedTrack, mix) {
+    if (!SpotifyAuth.isAuthed() || !sdkDeviceId) return;
 
     // We need the seed artist's ID — pull live from SDK state since
     // lastSeenTrack only stored the artist name string.
@@ -752,17 +745,22 @@
     }).sort((a, b) => b.score - a.score);
 
     const winner = scored[0];
+    const aname = (winner.track.artists && winner.track.artists[0] && winner.track.artists[0].name) || '?';
+    const tags = [
+      winner.isFavored && 'favored',
+      winner.isNew && 'new',
+    ].filter(Boolean).join('+') || 'baseline';
+
+    // Queue the winner via Spotify Connect — plays next in this session.
+    // No playlist mutation. If the user likes it, they hit ♥ to save.
     try {
-      await SpotifyAuth.addTrackToPlaylist(stationPid, winner.track.uri);
-      cache.add(winner.track.uri);
-      const aname = (winner.track.artists && winner.track.artists[0] && winner.track.artists[0].name) || '?';
-      const tags = [
-        winner.isFavored && 'favored',
-        winner.isNew && 'new',
-      ].filter(Boolean).join('+') || 'baseline';
-      console.log(`[replenish] + "${winner.track.name}" by ${aname} (${tags}, score ${winner.score.toFixed(1)})`);
+      await SpotifyAuth.api(
+        `/me/player/queue?uri=${encodeURIComponent(winner.track.uri)}&device_id=${sdkDeviceId}`,
+        { method: 'POST' }
+      );
+      console.log(`[discover] ▶ queued "${winner.track.name}" by ${aname} (${tags}, score ${winner.score.toFixed(1)})`);
     } catch (e) {
-      console.warn('[replenish] add failed', e);
+      console.warn('[discover] queue failed', e.message || e);
     }
 
     // Mark the seed artist as "known" — they've now been heard through.
@@ -814,7 +812,9 @@
   async function onTrackSkipped(track) {
     const mix = findMix(activeId);
 
-    // Local record of this skip
+    // Local record only. The recommender's hard-veto uses this set so the
+    // same artist won't surface as a discovery again. We DO NOT mutate any
+    // Spotify playlist on skip — stations stay curated/static.
     skipped.push({
       ts: Date.now(),
       uri: track.uri,
@@ -824,23 +824,7 @@
       stationTitle: mix ? mix.title : activeId,
     });
     saveSkipped();
-
-    // Remove from the active station's playlist so it stops surfacing
-    if (mix && mix.spotifyUri) {
-      const pid = playlistIdFromUri(mix.spotifyUri);
-      try {
-        await SpotifyAuth.removeTrackFromPlaylist(pid, track.uri);
-        const cache = stationTrackCache[activeId];
-        if (cache) cache.delete(track.uri);
-        console.log(`[skip] ✓ removed "${track.name}" from "${mix.title}" (Spotify-side)`);
-      } catch (e) {
-        // Most likely 403 (missing scope or playlist not owned). Make this
-        // failure VERY visible since "skip should remove" is core behavior.
-        console.error(`[skip] ✗ FAILED to remove "${track.name}" from "${mix.title}":`, e.message || e);
-      }
-    } else {
-      console.warn(`[skip] "${track.name}" — no station URI to remove from`);
-    }
+    console.log(`[skip] recorded "${track.name}" by ${track.artist} (informs recommender; no Spotify mutation)`);
   }
 
   // ── Spotify Web Playback SDK ──
