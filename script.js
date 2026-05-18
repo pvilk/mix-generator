@@ -2022,7 +2022,11 @@
     const [category, text] = STATION_PROMPTS[idx];
     els.djInput.value = text;
     els.djInput.focus();
-    els.djInput.setSelectionRange(text.length, text.length);
+    // Cursor at START so the input shows the beginning of the prompt, not
+    // the end (long prompts would otherwise scroll-right and hide "Station
+    // for…"). User can ⌘→ or End to jump to the tail if they want to edit.
+    els.djInput.setSelectionRange(0, 0);
+    els.djInput.scrollLeft = 0;
 
     if (els.djRollHint) {
       els.djRollHint.innerHTML = `<span class="--cat">${category}</span>Enter to submit · 🎲 to reroll`;
