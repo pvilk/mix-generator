@@ -1393,55 +1393,18 @@
     els.overlayBody.innerHTML = html;
 
     els.overlayActions.innerHTML = '';
-    if (authed && liked.length > 0) {
-      const open = document.createElement('button');
-      open.className = '--primary';
-      open.textContent = 'Open in Spotify ↗';
-      open.addEventListener('click', () => {
-        // Open a fresh tab synchronously inside the user-gesture handler so
-        // popup blockers don't eat it. Resolve the URL inline (sync), then
-        // navigate. If the playlist doesn't exist yet, kick off the ensure
-        // call and navigate when ready.
-        const url = SpotifyAuth.getLikedPlaylistUrl();
-        if (url) {
-          window.open(url, '_blank', 'noopener');
-          return;
-        }
-        const tab = window.open('about:blank', '_blank', 'noopener');
-        SpotifyAuth.findOrCreateLikedPlaylist()
-          .then((id) => {
-            const fresh = `https://open.spotify.com/playlist/${id}`;
-            if (tab && !tab.closed) tab.location.href = fresh;
-          })
-          .catch((e) => {
-            console.warn('[liked] open failed', e);
-            if (tab && !tab.closed) tab.close();
-            open.textContent = 'Failed — try again';
-            setTimeout(() => { open.textContent = 'Open in Spotify ↗'; }, 1800);
-          });
-      });
-      els.overlayActions.appendChild(open);
-    } else if (!authed) {
+    if (!authed) {
       const c = document.createElement('button');
       c.className = '--primary';
       c.textContent = 'Set up auto-save';
       c.addEventListener('click', () => { closeOverlay(); openOverlay('connect'); });
       els.overlayActions.appendChild(c);
-    }
-    if (liked.length > 0 || skipped.length > 0) {
-      const clr = document.createElement('button');
-      clr.className = '--ghost';
-      clr.textContent = 'Clear session';
-      clr.addEventListener('click', () => {
-        if (!confirm('Clear local session list? (Does not undo changes already made to Spotify.)')) return;
-        liked = [];
-        skipped = [];
-        saveLiked();
-        saveSkipped();
-        renderHotcorner();
-        renderLikedOverlay();
-      });
-      els.overlayActions.appendChild(clr);
+    } else {
+      const close = document.createElement('button');
+      close.className = '--ghost';
+      close.textContent = 'Close';
+      close.addEventListener('click', closeOverlay);
+      els.overlayActions.appendChild(close);
     }
   }
 
