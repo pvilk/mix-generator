@@ -48,7 +48,6 @@
   const LS_ONBOARDED = 'mixgen.onboarded.v1';
   const LS_ONBOARDING_STEP = 'mixgen.onboarding.step';
   const DEFAULT_SETTINGS = {
-    bridgeTracks: true,
     bpmLocked: false,
     albumArtTint: true,
   };
@@ -63,10 +62,6 @@
     localStorage.setItem(LS_SETTINGS, JSON.stringify(s));
   }
 
-  // ── Bridge-track state ──
-  // When non-null, we're mid-transition between stations: bridge track is
-  // playing, and when it ends we load `targetStation`.
-  let bridgeState = null;
   let activeId = data.active || (data.playlists[0] && data.playlists[0].id);
   let isPlaying = false;
   let sdkPlayer = null;            // Spotify Web Playback SDK instance
@@ -910,7 +905,6 @@
 
     sdkPlayer.addListener('player_state_changed', (state) => {
       if (!state) return;
-      checkBridgeEnd(state);
       const { paused, position, duration, track_window } = state;
       const playing = !paused;
       if (playing !== isPlaying) setPlayingVisual(playing);
@@ -1006,16 +1000,52 @@
   async function playStation(mix) {
     if (!sdkDeviceId) return;
     try {
+      // Find the most-recently-added track so playback starts fresh — fixes
+      // the "same songs in the same order" complaint by dropping in at
+      // whatever was most recently added (DJ adds, replenishments, listen-
+      // through saves all surface here) instead of always at track #1.
+      const newestUri = await findNewestTrackUri(mix.spotifyUri);
+
+      const body = { context_uri: mix.spotifyUri, position_ms: 0 };
+      if (newestUri) body.offset = { uri: newestUri };
+
       await SpotifyAuth.api(`/me/player/play?device_id=${sdkDeviceId}`, {
         method: 'PUT',
-        body: JSON.stringify({
-          context_uri: mix.spotifyUri,
-          position_ms: 0,
-        }),
+        body: JSON.stringify(body),
       });
-      console.log('[player] context_uri play:', mix.title);
+      console.log('[player] context play:', mix.title, newestUri ? '(starting at newest add)' : '');
+
+      // Enable shuffle so the rest of the playlist isn't played in stored
+      // order. Different walk through the catalogue each session.
+      try {
+        await SpotifyAuth.api(`/me/player/shuffle?state=true&device_id=${sdkDeviceId}`, {
+          method: 'PUT',
+        });
+        console.log('[player] shuffle: on');
+      } catch (e) {
+        console.warn('[player] shuffle toggle failed', e.message || e);
+      }
     } catch (e) {
       console.warn('playStation failed', e);
+    }
+  }
+
+  // Most-recently-added track URI in a playlist
+  async function findNewestTrackUri(spotifyUri) {
+    const pid = playlistIdFromUri(spotifyUri);
+    if (!pid) return null;
+    try {
+      const resp = await SpotifyAuth.api(
+        `/playlists/${pid}/tracks?fields=items(added_at,track(uri))&limit=50`
+      );
+      if (!resp || !resp.items || resp.items.length === 0) return null;
+      const sorted = resp.items
+        .filter((i) => i && i.added_at && i.track && i.track.uri)
+        .sort((a, b) => b.added_at.localeCompare(a.added_at));
+      return sorted.length > 0 ? sorted[0].track.uri : null;
+    } catch (e) {
+      console.warn('[player] findNewestTrackUri failed', e.message || e);
+      return null;
     }
   }
 
@@ -1066,24 +1096,6 @@
     const mix = findMix(id);
     if (!mix || id === activeId) return;
 
-    // Try bridge if enabled, not already mid-bridge, and we have ammo
-    const settings = loadSettings();
-    const canBridge = settings.bridgeTracks
-      && !opts.skipBridge
-      && !bridgeState
-      && sdkReady
-      && currentTrack
-      && liked.length > 0;
-
-    if (canBridge) {
-      const bridge = pickBridgeTrack(mix);
-      if (bridge) {
-        await startBridge(bridge, mix);
-        return;
-      }
-    }
-
-    // Direct station switch
     activeId = id;
     lastSeenTrack = null;
     currentTrack = null;
@@ -1112,116 +1124,6 @@
     }, 1200);
   }
 
-  // ── Bridge track helpers ──
-  function pickBridgeTrack(targetMix) {
-    // Pick a recently-loved track that isn't currently playing and isn't
-    // already in the target station's playlist.
-    const cache = stationTrackCache[targetMix.id] || new Set();
-    const recentLoved = liked.slice(-25).filter((l) =>
-      l && l.uri
-      && (!currentTrack || l.uri !== currentTrack.uri)
-      && !cache.has(l.uri)
-    );
-    if (recentLoved.length === 0) return null;
-    return recentLoved[Math.floor(Math.random() * recentLoved.length)];
-  }
-
-  // Bridge timings: total cap = HOLD + FADE.
-  // The bridge song plays at full volume for BRIDGE_HOLD_MS, then volume
-  // ramps to 0 over BRIDGE_FADE_MS while we hand off to the next station.
-  const BRIDGE_HOLD_MS = 27_000;     // 27s of full-volume bridge
-  const BRIDGE_FADE_MS = 3_000;      // 3s fade-out
-  const BRIDGE_TOTAL_MS = BRIDGE_HOLD_MS + BRIDGE_FADE_MS;
-
-  async function startBridge(bridge, targetMix) {
-    if (!sdkDeviceId) return;
-    bridgeState = {
-      trackUri: bridge.uri,
-      bridgeName: bridge.name,
-      bridgeArtist: bridge.artist,
-      targetStation: targetMix,
-      startedAt: Date.now(),
-      holdTimer: null,
-      fadeTimer: null,
-      handoffTimer: null,
-    };
-    console.log(`[bridge] "${bridge.name}" by ${bridge.artist} → ${targetMix.title} (${BRIDGE_TOTAL_MS / 1000}s total)`);
-
-    // Card feedback
-    els.cardTitle.classList.remove('--swapping');
-    els.cardArtist.classList.remove('--swapping');
-    els.cardTitle.textContent = `→ ${targetMix.title}`;
-    els.cardArtist.textContent = `bridging via ${bridge.name} · ${bridge.artist}`;
-    els.stationName.textContent = `Bridging → ${targetMix.title.toUpperCase()}`;
-
-    try {
-      // Ensure full volume before playing
-      try { await sdkPlayer.setVolume(1.0); } catch (e) {}
-
-      await SpotifyAuth.api(`/me/player/play?device_id=${sdkDeviceId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ uris: [bridge.uri] }),
-      });
-      setPlayingVisual(true);
-
-      // Schedule the fade + handoff
-      bridgeState.fadeTimer = setTimeout(() => fadeOutBridge(), BRIDGE_HOLD_MS);
-      bridgeState.handoffTimer = setTimeout(() => completeBridge(), BRIDGE_TOTAL_MS);
-    } catch (e) {
-      console.warn('[bridge] play failed, doing direct switch', e);
-      cancelBridge();
-      await setStation(targetMix.id, { skipBridge: true });
-    }
-  }
-
-  async function fadeOutBridge() {
-    if (!bridgeState || !sdkPlayer) return;
-    console.log('[bridge] fading out');
-    // Linear fade in ~10 steps over BRIDGE_FADE_MS
-    const STEPS = 10;
-    const stepMs = BRIDGE_FADE_MS / STEPS;
-    for (let i = STEPS - 1; i >= 0; i--) {
-      if (!bridgeState) return; // bridge cancelled mid-fade
-      const vol = i / STEPS;
-      try { await sdkPlayer.setVolume(vol); } catch (e) {}
-      await new Promise((r) => setTimeout(r, stepMs));
-    }
-  }
-
-  async function completeBridge() {
-    if (!bridgeState) return;
-    const target = bridgeState.targetStation;
-    console.log('[bridge] handoff → loading', target.title);
-    cancelBridge();
-    // Restore volume before the new station starts
-    try { await sdkPlayer.setVolume(1.0); } catch (e) {}
-    await setStation(target.id, { skipBridge: true });
-  }
-
-  function cancelBridge() {
-    if (!bridgeState) return;
-    if (bridgeState.fadeTimer) clearTimeout(bridgeState.fadeTimer);
-    if (bridgeState.handoffTimer) clearTimeout(bridgeState.handoffTimer);
-    bridgeState = null;
-  }
-
-  // Called from player_state_changed — if the bridge track ENDS naturally
-  // (rare with a 27s cap on a 3-4 min song, but possible for short tracks)
-  // we transition early instead of waiting for the timer.
-  async function checkBridgeEnd(state) {
-    if (!bridgeState || !state) return;
-    const cur = state.track_window && state.track_window.current_track;
-    const elapsed = Date.now() - bridgeState.startedAt;
-    const curUri = cur && cur.uri;
-
-    const trackChanged = curUri && curUri !== bridgeState.trackUri && elapsed > 3000;
-    const ranOut = state.paused && state.position === 0 && elapsed > 3000;
-
-    if (trackChanged || ranOut) {
-      console.log('[bridge] bridge ended naturally → handoff');
-      await completeBridge();
-    }
-  }
 
   function cycleStation(dir = 1) {
     const idx = data.playlists.findIndex((p) => p.id === activeId);
@@ -1550,13 +1452,6 @@
     els.overlayBody.innerHTML = `
       <div class="settings-list">
         <label class="settings-row">
-          <input type="checkbox" id="setting-bridge" ${s.bridgeTracks ? 'checked' : ''} />
-          <div class="settings-row__text">
-            <div class="settings-row__title">Bridge tracks between stations</div>
-            <div class="settings-row__desc">When you switch stations, play one familiar song from your liked list first as a transition. The new station loads automatically when the bridge ends.</div>
-          </div>
-        </label>
-        <label class="settings-row">
           <input type="checkbox" id="setting-bpm" ${s.bpmLocked ? 'checked' : ''} />
           <div class="settings-row__text">
             <div class="settings-row__title">BPM-locked replenishment</div>
@@ -1590,7 +1485,6 @@
     saveBtn.textContent = 'Save';
     saveBtn.addEventListener('click', () => {
       saveSettings({
-        bridgeTracks: document.getElementById('setting-bridge').checked,
         bpmLocked: document.getElementById('setting-bpm').checked,
         albumArtTint: document.getElementById('setting-tint').checked,
       });
