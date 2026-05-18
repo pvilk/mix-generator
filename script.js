@@ -86,6 +86,16 @@
   let autoSkipsInARow = 0;
   let autoSkipInProgress = false;
 
+  // ── Chapter auto-regen state ──
+  // After N listen-throughs on a station, background-trigger MCP to create a
+  // fresh ~120-track playlist with the same vibe. Swap URI when current track
+  // ends so mid-song never gets cut. Empties the playlist into fresh tracks
+  // without the user lifting a finger.
+  const CHAPTER_REGEN_THRESHOLD = 50;
+  const stationListenCounts = {};        // stationId → listen count this session
+  const stationRegenInProgress = {};     // stationId → bool
+  const stationsAwaitingSwap = {};       // stationId → new spotifyUri
+
   // Returns true if this track should be silently skipped because the user
   // already rejected it (URI in skipped list, or artist in last 20 skips).
   function shouldAutoSkip(track) {
@@ -638,7 +648,84 @@
         console.warn('[discover] failed', e.message || e));
     }
 
+    // 4. Tick the station's per-session listen counter; if we've crossed the
+    //    chapter threshold, kick off a background regen
+    if (mix && mix.spotifyUri && SpotifyAuth.isAuthed()) {
+      stationListenCounts[mix.id] = (stationListenCounts[mix.id] || 0) + 1;
+      const n = stationListenCounts[mix.id];
+      if (n % 10 === 0 || n === CHAPTER_REGEN_THRESHOLD) {
+        console.log(`[chapter] "${mix.title}" listen count: ${n}/${CHAPTER_REGEN_THRESHOLD}`);
+      }
+      if (n >= CHAPTER_REGEN_THRESHOLD
+          && !stationRegenInProgress[mix.id]
+          && !stationsAwaitingSwap[mix.id]) {
+        triggerChapterRegen(mix);   // fire and forget
+      }
+    }
+
+    // 5. If a chapter regen has finished while the current track was playing,
+    //    NOW (between tracks) is the right moment to swap to the new URI —
+    //    no mid-song cut.
+    if (mix && stationsAwaitingSwap[mix.id] && sdkReady) {
+      const newUri = stationsAwaitingSwap[mix.id];
+      delete stationsAwaitingSwap[mix.id];
+      mix.spotifyUri = newUri;
+      mix.spotifyUrl = `https://open.spotify.com/playlist/${newUri.split(':').pop()}`;
+      console.log(`[chapter] ▶ swapping "${mix.title}" to fresh playlist after current track`);
+      try { await playStation(mix); } catch (e) { console.warn('[chapter] swap failed', e); }
+    }
+
     inflightAdds.delete(track.uri);
+  }
+
+  // Background chapter regeneration — generates a fresh ~120-track playlist
+  // via MCP (claude -p), keeping station identity (title/subtitle/scene)
+  // intact. Goes through /dj. Routes around Spotify dev app restrictions
+  // entirely since MCP uses Claude.ai's connection.
+  async function triggerChapterRegen(mix) {
+    stationRegenInProgress[mix.id] = true;
+    console.log(`[chapter] generating fresh chapter for "${mix.title}"…`);
+    try {
+      const profile = buildTasteProfile();
+      const prompt =
+        `CHAPTER REGEN for the "${mix.title}" station. The user has listened through ${CHAPTER_REGEN_THRESHOLD}+ tracks ` +
+        `on this station this session. Generate a FRESH ~120-track playlist via create_playlist that fits the same vibe.\n\n` +
+        `USE action="create_station" with these exact fields preserved (DO NOT change them):\n` +
+        `  id="${mix.id}"\n` +
+        `  title="${mix.title}"\n` +
+        `  subtitle="${mix.subtitle || ''}"\n` +
+        `  scene="${mix.scene || 'bar'}"\n` +
+        `  coverColors=${JSON.stringify(mix.coverColors || ['#5b2e2e'])}\n\n` +
+        `Only the playlist URI changes — everything else stays IDENTICAL. ` +
+        `Prefer tracks/artists DIFFERENT from the user's recent listen-throughs (chapter freshness).`;
+
+      const resp = await fetch('/dj', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, profile }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
+
+      const final = await pollDjJob(data.jobId);
+      if (final.status !== 'done') throw new Error(final.error || 'regen failed');
+
+      const r = final.result || {};
+      if (r.action === 'updated' && r.id === mix.id && r.spotifyUri) {
+        // Mark for swap at next track boundary
+        stationsAwaitingSwap[mix.id] = r.spotifyUri;
+        console.log(`[chapter] ✓ fresh playlist ready for "${mix.title}" — will swap at next track`);
+        showAuthToast(`Fresh chapter ready for ${mix.title} — swapping after this track`, 'success');
+        stationListenCounts[mix.id] = 0;
+      } else if (r.action === 'created') {
+        // Claude made a NEW station instead of overwriting — recover
+        console.warn(`[chapter] expected overwrite, got new station ${r.id}`);
+      }
+    } catch (e) {
+      console.warn(`[chapter] regen failed for "${mix.title}":`, e.message || e);
+    } finally {
+      stationRegenInProgress[mix.id] = false;
+    }
   }
 
   function loadKnownArtists() {

@@ -323,12 +323,19 @@ function applyDjResult(jobId, result) {
     let action;
     if (existingIdx >= 0) { data.playlists[existingIdx] = entry; action = 'updated'; }
     else { data.playlists.push(entry); action = 'created'; }
-    data.active = id;
+    // Only flip 'active' when this was an explicit create (a new station added
+    // to the dial). For 'updated' (chapter regen with existing id), leave
+    // active alone so background regens don't yank the user's UI.
+    if (action === 'created') data.active = id;
     writeData(data);
     jobs[jobId] = {
       ...jobs[jobId],
       status: 'done',
-      result: { action, id, title: entry.title, scene: entry.scene },
+      result: {
+        action, id, title: entry.title, scene: entry.scene,
+        spotifyUri: entry.spotifyUri,
+        spotifyUrl: entry.spotifyUrl,
+      },
     };
     return;
   }
