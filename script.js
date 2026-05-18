@@ -78,6 +78,31 @@
   let iframeDur = 0;
   let iframeTrackIdx = 0;
   let lastIframePos = 0;
+
+  // ── Auto-skip state ──
+  const MAX_AUTO_SKIPS_PER_TRACK = 3;       // safety: never spam-skip the same URI
+  const MAX_AUTO_SKIPS_IN_A_ROW = 10;       // safety: if every track is disfavored, just play one
+  const autoSkipCounter = {};               // uri → times we've auto-skipped it
+  let autoSkipsInARow = 0;
+  let autoSkipInProgress = false;
+
+  // Returns true if this track should be silently skipped because the user
+  // already rejected it (URI in skipped list, or artist in last 20 skips).
+  function shouldAutoSkip(track) {
+    if (!track || !track.uri) return false;
+    // Exact-URI skip
+    if (skipped.some((s) => s && s.uri === track.uri)) return true;
+    // Artist-level skip — only consider the LAST 20 skips so the set doesn't
+    // grow unboundedly
+    const recentSkips = skipped.slice(-20);
+    if (recentSkips.length === 0) return false;
+    const disfavored = new Set();
+    recentSkips.forEach((s) => {
+      String(s.artist || '').split(',').forEach((a) => disfavored.add(a.trim().toLowerCase()));
+    });
+    const artistNames = (track.artists || []).map((a) => (a.name || '').toLowerCase());
+    return artistNames.some((n) => disfavored.has(n));
+  }
   // Station-switch guard — ignore Spotify polls that return the OLD track
   // while the iframe is still loading the new playlist.
   let preSwitchUri = null;
@@ -915,9 +940,38 @@
       sdkReady = false;
     });
 
-    sdkPlayer.addListener('player_state_changed', (state) => {
+    sdkPlayer.addListener('player_state_changed', async (state) => {
       if (!state) return;
       const { paused, position, duration, track_window } = state;
+
+      // ─── AUTO-SKIP BLACKLIST ────────────────────────────────────────
+      // Before we render anything, check if this track is one Phil has
+      // skipped before (or is by a disfavored artist). If so, jump to the
+      // next track immediately. The user never hears blacklisted tracks
+      // again — no Spotify mutation needed.
+      const t = track_window && track_window.current_track;
+      if (t && shouldAutoSkip(t)) {
+        const skippedAlreadyCount = autoSkipCounter[t.uri] || 0;
+        if (skippedAlreadyCount < MAX_AUTO_SKIPS_PER_TRACK) {
+          autoSkipCounter[t.uri] = skippedAlreadyCount + 1;
+          autoSkipInProgress = true;
+          autoSkipsInARow++;
+          console.log(`[auto-skip] ⏭ "${t.name}" by ${t.artist} — blacklisted`);
+          if (autoSkipsInARow > MAX_AUTO_SKIPS_IN_A_ROW) {
+            console.warn(`[auto-skip] ${MAX_AUTO_SKIPS_IN_A_ROW} skips in a row — pausing auto-skip to avoid loop`);
+            autoSkipInProgress = false;
+            // fall through and play this track
+          } else {
+            try { await sdkPlayer.nextTrack(); } catch (e) { console.warn('[auto-skip] nextTrack failed', e); }
+            return;
+          }
+        }
+      } else if (t) {
+        // Reset the in-a-row counter once we land on a non-skipped track
+        autoSkipsInARow = 0;
+        autoSkipInProgress = false;
+      }
+
       const playing = !paused;
       if (playing !== isPlaying) setPlayingVisual(playing);
 
@@ -938,17 +992,24 @@
           progressMs: position,
         };
 
-        // Listen-through / skip detection on URI change
+        // Listen-through / skip detection on URI change. Auto-skip
+        // transitions are filtered out — they're machine actions, not
+        // user reactions, so they shouldn't pollute the skipped/liked lists.
         if (lastSeenTrack && lastSeenTrack.uri !== cur.uri) {
-          const ratio = lastSeenTrack.durationMs > 0
-            ? lastSeenTrack.progressMs / lastSeenTrack.durationMs : 0;
-          const verdict = ratio >= 0.85 ? 'LISTEN-THROUGH' : 'SKIP';
-          console.log(
-            `[transition] "${lastSeenTrack.name}" by ${lastSeenTrack.artist}` +
-            ` · ${(ratio * 100).toFixed(0)}% played → ${verdict}`
-          );
-          if (ratio >= 0.85) onTrackListenedThrough(lastSeenTrack);
-          else onTrackSkipped(lastSeenTrack);
+          if (autoSkipInProgress) {
+            console.log(`[transition] suppressed (auto-skip in progress)`);
+            autoSkipInProgress = false;
+          } else {
+            const ratio = lastSeenTrack.durationMs > 0
+              ? lastSeenTrack.progressMs / lastSeenTrack.durationMs : 0;
+            const verdict = ratio >= 0.85 ? 'LISTEN-THROUGH' : 'SKIP';
+            console.log(
+              `[transition] "${lastSeenTrack.name}" by ${lastSeenTrack.artist}` +
+              ` · ${(ratio * 100).toFixed(0)}% played → ${verdict}`
+            );
+            if (ratio >= 0.85) onTrackListenedThrough(lastSeenTrack);
+            else onTrackSkipped(lastSeenTrack);
+          }
         }
         lastSeenTrack = cur;
         renderTrackOnCard(cur);
@@ -1450,6 +1511,19 @@
       c.addEventListener('click', () => { closeOverlay(); openOverlay('connect'); });
       els.overlayActions.appendChild(c);
     } else {
+      if (liked.length > 0) {
+        const saveBtn = document.createElement('button');
+        saveBtn.className = '--primary';
+        saveBtn.textContent = `Save ${liked.length} to new playlist`;
+        saveBtn.title = 'Uses Claude\'s Spotify MCP — bypasses your dev app entirely';
+        saveBtn.addEventListener('click', () => {
+          closeOverlay();
+          openDj();
+          els.djInput.value = `save my session — create a new playlist with my recent ${liked.length} listen-throughs`;
+          submitDj();
+        });
+        els.overlayActions.appendChild(saveBtn);
+      }
       const close = document.createElement('button');
       close.className = '--ghost';
       close.textContent = 'Close';
@@ -1880,6 +1954,14 @@
         els.djStatus.textContent = `New scene: ${r.label || r.sceneId}. Reloading…`;
         els.djStatus.className = 'dj__status --done';
         setTimeout(() => window.location.reload(), 1400);
+        return;
+      }
+
+      // session_saved → show success + offer to open the new playlist
+      if (r.action === 'session_saved') {
+        els.djStatus.innerHTML = `Saved: <a href="${escapeHtml(r.spotifyUrl)}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline;">${escapeHtml(r.title)} ↗</a>`;
+        els.djStatus.className = 'dj__status --done';
+        setTimeout(closeDj, 5000);
         return;
       }
 

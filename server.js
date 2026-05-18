@@ -124,14 +124,16 @@ DECIDE THE ACTION:
 2. ADD specific tracks to an existing station (preserve the playlist, just append) → "add_tracks"
 3. REMOVE specific tracks from an existing station → "remove_tracks"
 4. CREATE a NEW VISUAL SCENE (a new ambient room — forest, beach, basement, etc.) → "create_scene"
-5. Can't do it → "error"
+5. SAVE the user's recent listening session as a new Spotify playlist → "save_session"
+6. Can't do it → "error"
 
 CHOOSING ACTION:
-- "make a station for X" / "new station: X" → create_station (new id)
-- "refresh X" / "change X to be Y" / "make X darker" → create_station (re-use X's id — overwrites)
+- "make a station for X" / "new station: X" → create_station (new id) — REQUEST ~120 TRACKS in the create_playlist prompt
+- "refresh X" / "change X to be Y" / "make X darker" → create_station (re-use X's id — overwrites) — also ~120 TRACKS
 - "add more shoegaze to X" / "X needs more Y" / "throw in some Z" → add_tracks (search Spotify, return URIs, browser will append to the existing playlist)
 - "remove the synthwave from X" / "drop track Y from X" → remove_tracks (search to identify URIs)
 - "make me a forest scene" / "add a beach room" / "create a winter night vibe" → create_scene (generate HTML + CSS for a new ambient backdrop)
+- "save my session" / "save my likes" / "archive what I listened to" → save_session (use create_playlist via MCP to make a dated archive — this bypasses the user's dev app entirely since MCP uses Claude.ai's Spotify connection)
 
 CHOOSING "scene":
 - "highway" — night driving, synthwave, dark, dream-pop, lo-fi
@@ -172,6 +174,15 @@ C) REMOVE tracks from an existing station:
   "summary": "Short description of what you removed and why"
 }
 
+D2) SAVE recent listening as an archive playlist (no playlist mutation; creates a fresh playlist via MCP using Claude.ai's auth):
+{
+  "action": "save_session",
+  "title": "Mix Generator Likes — <YYYY-MM-DD>",
+  "spotifyUri": "spotify:playlist:...",
+  "spotifyUrl": "https://open.spotify.com/playlist/...",
+  "summary": "Created a 25-track archive of recent loves"
+}
+
 D) CREATE a new visual scene (a new ambient "room"):
 {
   "action": "create_scene",
@@ -196,7 +207,9 @@ E) Error:
 
 EXECUTION TIPS:
 - For "add" prompts: issue 3-5 separate Spotify search queries (different angles on the vibe) to collect 8-12 candidates, then return your favorite 5-8 URIs.
-- For "remove" prompts: if Phil names specific artists/tracks, search for them to get URIs. If the request is vague ("less synth"), recommend create_station instead.
+- For "remove" prompts: if user names specific artists/tracks, search for them to get URIs. If the request is vague ("less synth"), recommend create_station instead.
+- For create_station: REQUEST ~120 TRACKS in your create_playlist prompt, not 30. The radio runs long sessions and a deeper playlist means more variety per station load. Phrase it like "Create a 120-track [vibe] mix..."
+- For save_session: use create_playlist to make a dated archive playlist with the user's recent listen-throughs. The MCP can't directly add tracks to existing playlists, so save_session creates a FRESH playlist named "Mix Generator Likes — <date>" describing the user's recent listening.
 - Use the taste profile (if present) to bias selections.
 - Output ONLY the JSON object — no prose, no markdown fences.
 
@@ -316,6 +329,25 @@ function applyDjResult(jobId, result) {
       ...jobs[jobId],
       status: 'done',
       result: { action, id, title: entry.title, scene: entry.scene },
+    };
+    return;
+  }
+
+  if (result.action === 'save_session') {
+    if (!result.spotifyUri) {
+      jobs[jobId] = { ...jobs[jobId], status: 'error', error: 'save_session did not return a Spotify URI' };
+      return;
+    }
+    jobs[jobId] = {
+      ...jobs[jobId],
+      status: 'done',
+      result: {
+        action: 'session_saved',
+        title: result.title || 'Mix Generator Session',
+        spotifyUri: result.spotifyUri,
+        spotifyUrl: result.spotifyUrl || ('https://open.spotify.com/playlist/' + result.spotifyUri.split(':').pop()),
+        summary: result.summary || '',
+      },
     };
     return;
   }
