@@ -20,7 +20,6 @@
     ctrlPrev: document.getElementById('ctrl-prev'),
     ctrlPlay: document.getElementById('ctrl-play'),
     ctrlNext: document.getElementById('ctrl-next'),
-    ctrlHeart: document.getElementById('ctrl-heart'),
 
     hotcorner: document.getElementById('hotcorner'),
     gear: document.getElementById('gear'),
@@ -348,7 +347,6 @@
     }
     if (isNewTrack) {
       console.log('[card] new track on deck:', t.name, '·', t.artist);
-      refreshHeartState(t);
       updateArtTint(t);
     }
   }
@@ -469,58 +467,6 @@
       }
     } catch (e) {
       console.warn('[mediasession] metadata failed', e);
-    }
-  }
-
-  // ── ♡ Save / unsave to Spotify Liked Songs ──
-  async function refreshHeartState(track) {
-    if (!SpotifyAuth.isAuthed() || !track || !track.id) {
-      els.ctrlHeart.classList.remove('--saved');
-      els.ctrlHeart.setAttribute('aria-pressed', 'false');
-      return;
-    }
-    try {
-      const saved = await SpotifyAuth.isTrackSavedInLibrary(track.id);
-      els.ctrlHeart.classList.toggle('--saved', !!saved);
-      els.ctrlHeart.setAttribute('aria-pressed', saved ? 'true' : 'false');
-    } catch (e) {
-      // 403 here means user-library-read scope missing — prompt re-auth
-      if (String(e.message || e).includes('403')) {
-        console.warn('[heart] scope missing — re-auth needed');
-      }
-    }
-  }
-
-  async function toggleHeart() {
-    flashButton(els.ctrlHeart);
-    if (!currentTrack || !currentTrack.id) return;
-    if (!SpotifyAuth.isAuthed()) { openOverlay('connect'); return; }
-    const wasSaved = els.ctrlHeart.classList.contains('--saved');
-    // Optimistic toggle
-    els.ctrlHeart.classList.toggle('--saved', !wasSaved);
-    els.ctrlHeart.setAttribute('aria-pressed', !wasSaved ? 'true' : 'false');
-    try {
-      if (wasSaved) {
-        await SpotifyAuth.removeTrackFromLibrary(currentTrack.id);
-        console.log(`[heart] ✓ removed "${currentTrack.name}" from Liked Songs`);
-      } else {
-        await SpotifyAuth.saveTrackToLibrary(currentTrack.id);
-        console.log(`[heart] ✓ saved "${currentTrack.name}" to Liked Songs`);
-      }
-    } catch (e) {
-      // Revert the optimistic toggle on the heart icon
-      els.ctrlHeart.classList.toggle('--saved', wasSaved);
-      els.ctrlHeart.setAttribute('aria-pressed', wasSaved ? 'true' : 'false');
-      console.error('[heart] ✗ save/unsave failed:', e.message || e);
-      // ONE explicit user click — surface the failure once with a helpful nudge
-      if (String(e.message || e).includes('403')) {
-        showAuthToast(
-          'Heart save blocked by Spotify (dev app restriction). Use ⌘K "save my session" to archive your likes via MCP instead — that path works.',
-          'error'
-        );
-      } else {
-        showAuthToast(`Heart save failed: ${e.message || e}`, 'error');
-      }
     }
   }
 
@@ -1922,7 +1868,6 @@
   els.ctrlPlay.addEventListener('click', togglePlay);
   els.ctrlNext.addEventListener('click', skipNext);
   els.ctrlPrev.addEventListener('click', skipPrev);
-  els.ctrlHeart.addEventListener('click', toggleHeart);
   els.stationPrev.addEventListener('click', () => cycleStation(-1));
   els.stationNext.addEventListener('click', () => cycleStation(1));
   els.connectPrompt.addEventListener('click', () => openOverlay('connect'));

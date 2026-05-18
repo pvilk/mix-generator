@@ -15,8 +15,10 @@ const ROOT = __dirname;
 const DATA_JS = path.join(ROOT, 'data.js');
 const DATA_EXAMPLE = path.join(ROOT, 'data.example.js');
 const STATE_FILE = path.join(ROOT, 'state.json');     // per-user listening history backup (gitignored)
+const ARCHIVES_FILE = path.join(ROOT, 'archives.json'); // daily auto-archive ledger (gitignored)
 const SCENES_DIR = path.join(ROOT, 'scenes');         // user-generated scenes (gitignored)
 const DJ_TIMEOUT_MS = 180_000; // 3 minutes — claude -p with MCP calls can be slow
+const ARCHIVE_CHECK_INTERVAL_MS = 30 * 60 * 1000;     // 30 min: every half hour, check if yesterday is archived
 
 // Ensure scenes/ exists (state.json is created on first sync)
 if (!fs.existsSync(SCENES_DIR)) fs.mkdirSync(SCENES_DIR, { recursive: true });
@@ -538,8 +540,164 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// ────────────────────────────────────────────────────────────────────
+// Daily auto-archive — creates "<Date> Liked Songs" playlists via MCP
+// ────────────────────────────────────────────────────────────────────
+//
+// Once a day (any time after midnight local time), check if yesterday's
+// liked tracks have been archived to a dated Spotify playlist. If not,
+// fire a claude -p job that calls mcp__claude_ai_Spotify__create_playlist
+// to create one. The MCP path bypasses the user's dev app entirely, so
+// it works even with Development Mode restrictions.
+//
+// State lives in archives.json (separate from state.json so browser-side
+// state syncs don't clobber it). Schema:
+//   {
+//     "lastDailyArchive": "2026-05-16",
+//     "archives": [ { date, title, spotifyUri, trackCount, createdAt } | { date, skipped, createdAt } ]
+//   }
+//
+// Robust to server downtime: on each boot the check runs and will
+// catch up any single missing day (yesterday). If you leave it off for
+// a week, only yesterday gets archived — earlier days are lost. Trade-
+// off: simplicity over completeness.
+
+function ymdLocal(d) {
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+}
+
+function ordinal(n) {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return n + 'th';
+  const last = n % 10;
+  return n + (last === 1 ? 'st' : last === 2 ? 'nd' : last === 3 ? 'rd' : 'th');
+}
+
+function formatDateTitle(d) {
+  const months = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
+  return `${months[d.getMonth()]} ${ordinal(d.getDate())} ${d.getFullYear()} Liked Songs`;
+}
+
+function readArchives() {
+  if (!fs.existsSync(ARCHIVES_FILE)) return { lastDailyArchive: null, archives: [] };
+  try { return JSON.parse(fs.readFileSync(ARCHIVES_FILE, 'utf8')); }
+  catch (e) { return { lastDailyArchive: null, archives: [] }; }
+}
+
+function writeArchives(data) {
+  fs.writeFileSync(ARCHIVES_FILE, JSON.stringify(data, null, 2));
+}
+
+function recordArchive(targetYmd, entry) {
+  const data = readArchives();
+  data.lastDailyArchive = targetYmd;
+  data.archives.push({ date: targetYmd, createdAt: Date.now(), ...entry });
+  writeArchives(data);
+}
+
+function tracksLikedOnDate(targetYmd) {
+  if (!fs.existsSync(STATE_FILE)) return [];
+  let state;
+  try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
+  catch (e) { return []; }
+  return (state.liked || []).filter((l) => l.ts && ymdLocal(new Date(l.ts)) === targetYmd);
+}
+
+async function runDailyArchive(targetYmd) {
+  const tracks = tracksLikedOnDate(targetYmd);
+  if (tracks.length === 0) {
+    console.log(`[archive] no liked tracks on ${targetYmd}; marking skipped`);
+    recordArchive(targetYmd, { skipped: true, reason: 'no tracks' });
+    return;
+  }
+
+  const dateObj = new Date(targetYmd + 'T12:00:00');
+  const title = formatDateTitle(dateObj);
+  const trackList = tracks.map((t) => `  - "${t.name}" by ${t.artist} (${t.uri})`).join('\n');
+
+  const prompt = `You are running Mix Generator's scheduled daily-archive cron. Create a Spotify playlist via mcp__claude_ai_Spotify__create_playlist containing ALL of these tracks, in this exact order. Return ONLY the JSON envelope described below.
+
+PLAYLIST TITLE: "${title}"
+PLAYLIST DESCRIPTION: "Mix Generator daily auto-archive of liked tracks from ${targetYmd}. ${tracks.length} tracks the user listened to all the way through that day."
+
+TRACKS (${tracks.length} total — include every one):
+${trackList}
+
+NOTES:
+- Use the create_playlist MCP tool. It uses Claude.ai's Spotify connection, NOT the user's dev app, so it bypasses any 403 dev-mode restrictions.
+- Do NOT search or substitute tracks. Use the spotify:track:... URIs exactly as listed.
+- Do NOT include any liner notes, intro/outro text, or explanation. Just the playlist + the JSON envelope.
+
+RETURN JSON ONLY (no prose, no markdown fence — raw JSON):
+{
+  "action": "save_session",
+  "title": "${title}",
+  "spotifyUri": "spotify:playlist:...",
+  "spotifyUrl": "https://open.spotify.com/playlist/...",
+  "summary": "Archived ${tracks.length} tracks from ${targetYmd}"
+}`;
+
+  const jobId = `daily-${targetYmd}`;
+  jobs[jobId] = { status: 'queued', createdAt: Date.now(), prompt };
+  console.log(`[archive] firing "${title}" with ${tracks.length} tracks (jobId=${jobId})`);
+
+  // runDjJob is fire-and-forget — we wait by polling job state. claude -p
+  // can take 30-90s with MCP calls.
+  runDjJob(jobId, prompt, null);
+
+  const start = Date.now();
+  while (Date.now() - start < DJ_TIMEOUT_MS + 5000) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const j = jobs[jobId];
+    if (j.status === 'done' || j.status === 'error') break;
+  }
+
+  const j = jobs[jobId];
+  if (j.status === 'done' && j.result && j.result.spotifyUri) {
+    console.log(`[archive] ✓ "${title}" → ${j.result.spotifyUri}`);
+    recordArchive(targetYmd, {
+      title: j.result.title || title,
+      spotifyUri: j.result.spotifyUri,
+      spotifyUrl: j.result.spotifyUrl,
+      trackCount: tracks.length,
+    });
+  } else {
+    console.warn(`[archive] ✗ "${title}" failed: ${j.error || 'unknown'}`);
+    // DON'T record as archived — next check will retry
+  }
+}
+
+let archiveCheckRunning = false;
+async function checkDailyArchive() {
+  if (archiveCheckRunning) return;
+  archiveCheckRunning = true;
+  try {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const targetYmd = ymdLocal(yesterday);
+
+    const { lastDailyArchive } = readArchives();
+    if (lastDailyArchive && lastDailyArchive >= targetYmd) return;
+
+    console.log(`[archive] yesterday=${targetYmd} not archived (last=${lastDailyArchive}); running…`);
+    await runDailyArchive(targetYmd);
+  } catch (e) {
+    console.warn('[archive] checker crashed:', e.message || e);
+  } finally {
+    archiveCheckRunning = false;
+  }
+}
+
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Mix Generator   http://127.0.0.1:${PORT}/`);
   console.log(`DJ endpoint      POST /dj  { prompt }`);
+  console.log(`Daily archive    every ${ARCHIVE_CHECK_INTERVAL_MS / 60000} min (next check in 10s)`);
   console.log(`Claude binary    ${CLAUDE_BIN}`);
+
+  // Run the first check 10s after boot so the rest of startup settles
+  setTimeout(checkDailyArchive, 10_000);
+  setInterval(checkDailyArchive, ARCHIVE_CHECK_INTERVAL_MS);
 });

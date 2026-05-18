@@ -32,5 +32,9 @@ data.js
 # from on a fresh browser. Plain JSON, portable, migrate to a real DB whenever.
 state.json
 
+# Daily auto-archive ledger — tracks which days' liked songs have been
+# archived to Spotify playlists by the midnight cron.
+archives.json
+
 # User-generated scenes (created via DJ's create_scene action). Per-user.
 scenes/

@@ -623,36 +623,6 @@ body {
 
 .ctrl-btn--main:hover { background: white; }
 
-.ctrl-btn--heart {
-  color: rgba(244, 232, 207, 0.55);
-  font-size: 17px;
-  margin-right: 6px;
-}
-
-.ctrl-btn--heart:hover {
-  color: var(--vinyl-red);
-  background: rgba(196, 59, 74, 0.16);
-}
-
-.ctrl-btn--heart.--saved {
-  color: var(--vinyl-red);
-}
-
-.ctrl-btn--heart.--saved::before {
-  content: '♥';
-  position: absolute;
-}
-
-.ctrl-btn--heart.--saved {
-  font-size: 0;  /* hide ♡ */
-}
-
-.ctrl-btn--heart.--saved::before {
-  font-size: 18px;
-  color: var(--vinyl-red);
-  text-shadow: 0 0 12px rgba(196, 59, 74, 0.55);
-}
-
 /* ═══════════════════════════════════════
    AUDIO MOUNT — Spotify iframe lives behind the .card, in-viewport but
    visually invisible (opacity 0). Browsers throttle offscreen iframes
