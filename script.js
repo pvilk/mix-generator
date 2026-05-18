@@ -1127,6 +1127,43 @@
   }
   function closeOverlay() { els.overlay.hidden = true; }
 
+  // ── Auth result feedback (visible after each OAuth round-trip) ──
+  function showAuthSuccess() {
+    showAuthToast('✓ Spotify connected. All scopes granted.', 'success');
+  }
+  function showScopeMismatch(missing, fullScope) {
+    showAuthToast(
+      `⚠ Spotify granted partial access. Missing: ${missing.join(', ')}. ` +
+      `Revoke the app at spotify.com/account/apps and try again.`,
+      'error'
+    );
+    console.error('[auth] MISSING SCOPES:', missing.join(', '));
+    console.error('[auth] Granted scopes:', fullScope);
+  }
+  function showAuthToast(message, kind) {
+    let el = document.getElementById('auth-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'auth-toast';
+      el.style.cssText = `
+        position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+        max-width: 540px; padding: 14px 20px; border-radius: 8px;
+        font-family: var(--font-sans); font-size: 13px; font-weight: 500;
+        line-height: 1.5; z-index: 500; cursor: pointer;
+        animation: card-in 0.35s cubic-bezier(0.2, 1, 0.3, 1);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+      `;
+      document.body.appendChild(el);
+    }
+    el.style.background = kind === 'success' ? '#eafce8' : '#fce8e8';
+    el.style.color = kind === 'success' ? '#1d5a26' : '#7a1d1d';
+    el.style.border = kind === 'success' ? '1px solid #79c98c' : '2px solid #c44d4d';
+    el.textContent = message;
+    el.title = 'Click to dismiss';
+    el.onclick = () => el.remove();
+    if (kind === 'success') setTimeout(() => el.remove(), 4000);
+  }
+
   // ── Onboarding wizard ──
   function isOnboarded() { return localStorage.getItem(LS_ONBOARDED) === 'true'; }
   function markOnboarded() {
@@ -1457,14 +1494,14 @@
     const existingId = SpotifyAuth.getClientId();
     const onLocalhost = window.location.hostname === 'localhost';
 
-    let html = `<p>Connects a personal Spotify Developer App so the radio can show the live track + auto-write listened-through tracks to a <strong>Liked Radio Songs</strong> playlist.</p>`;
+    let html = `<p>Connects your personal Spotify Developer App so the radio can save listened-through tracks to your <strong>Spotify Liked Songs</strong> library and queue discovery tracks.</p>`;
     if (existingId) {
       html += `<div style="margin-top: 12px; padding: 12px 14px; border: 2px solid var(--vinyl-red); background: rgba(196, 59, 74, 0.08); font-size: 13px; line-height: 1.55;">
         <strong style="color: var(--vinyl-red); display: block; margin-bottom: 6px;">⚠ Reauthorizing?</strong>
-        Spotify silently re-grants the SAME scopes you approved before — even when this app asks for new ones. If skips aren't removing tracks, or saving to Liked Songs fails:
+        Spotify silently re-grants the SAME scopes you approved before — even when this app asks for new ones. If saving to Liked Songs fails:
         <ol style="margin: 8px 0 4px 18px; padding: 0;">
           <li>Open <a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener" style="color: var(--vinyl-red); font-weight: 700;">spotify.com/account/apps</a></li>
-          <li>Find <strong>Mix Generator</strong> → click <strong>Remove access</strong></li>
+          <li>Find <strong>the app you connected</strong> — its name will match the title shown on Spotify's consent screen (could be "Mix Generator", "Shuffler", or anything you set in the dev dashboard) → click <strong>Remove access</strong></li>
           <li>Come back and click Authorize below — you'll see the FULL consent screen with all current scopes</li>
         </ol>
       </div>`;
@@ -1783,8 +1820,20 @@
     let cameBackFromAuth = false;
     if (window.location.search.includes('code=') || window.location.search.includes('error=')) {
       try {
-        await SpotifyAuth.handleCallback();
+        const tokens = await SpotifyAuth.handleCallback();
         cameBackFromAuth = true;
+        // Verify the grant has the scopes we need; surface to the UI if not
+        if (tokens && tokens.scope) {
+          const granted = new Set(tokens.scope.split(' '));
+          const required = ['user-library-modify', 'user-library-read', 'streaming', 'user-modify-playback-state'];
+          const missing = required.filter((s) => !granted.has(s));
+          if (missing.length > 0) {
+            // Defer to next tick so other boot steps don't clobber the alert
+            setTimeout(() => showScopeMismatch(missing, tokens.scope), 500);
+          } else {
+            setTimeout(() => showAuthSuccess(), 500);
+          }
+        }
       } catch (e) {
         console.error('OAuth callback failed:', e);
         alert('Spotify auth failed: ' + (e.message || e));
