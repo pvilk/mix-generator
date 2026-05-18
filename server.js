@@ -133,7 +133,7 @@ CHOOSING ACTION:
 - "add more shoegaze to X" / "X needs more Y" / "throw in some Z" → add_tracks (search Spotify, return URIs, browser will append to the existing playlist)
 - "remove the synthwave from X" / "drop track Y from X" → remove_tracks (search to identify URIs)
 - "make me a forest scene" / "add a beach room" / "create a winter night vibe" → create_scene (generate HTML + CSS for a new ambient backdrop)
-- "save my session" / "save my likes" / "archive what I listened to" → save_session (use create_playlist via MCP to make a dated archive — this bypasses the user's dev app entirely since MCP uses Claude.ai's Spotify connection)
+- "save my session" / "save my likes" / "archive what I listened to" → save_session (use create_playlist via MCP to make a dated archive — this bypasses the user's dev app entirely since MCP uses Claude.ai's Spotify connection). PLAYLIST TITLE FORMAT: "<Month> <Day><ordinal> <Year> Liked Songs" e.g. "May 17th 2026 Liked Songs". Use the current date in the prompt to create_playlist.
 
 CHOOSING "scene":
 - "highway" — night driving, synthwave, dark, dream-pop, lo-fi
@@ -174,13 +174,13 @@ C) REMOVE tracks from an existing station:
   "summary": "Short description of what you removed and why"
 }
 
-D2) SAVE recent listening as an archive playlist (no playlist mutation; creates a fresh playlist via MCP using Claude.ai's auth):
+D2) SAVE recent listening as a dated archive playlist (no playlist mutation; creates a fresh playlist via MCP using Claude.ai's auth):
 {
   "action": "save_session",
-  "title": "Mix Generator Likes — <YYYY-MM-DD>",
+  "title": "May 17th 2026 Liked Songs",       // format: "<Month> <Day><ordinal> <Year> Liked Songs"
   "spotifyUri": "spotify:playlist:...",
   "spotifyUrl": "https://open.spotify.com/playlist/...",
-  "summary": "Created a 25-track archive of recent loves"
+  "summary": "Created a 25-track archive of today's loves"
 }
 
 D) CREATE a new visual scene (a new ambient "room"):

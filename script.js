@@ -980,7 +980,6 @@
         els.cardProgress.style.width = pct + '%';
       }
 
-      const t = track_window && track_window.current_track;
       if (t) {
         const cur = {
           uri: t.uri,
