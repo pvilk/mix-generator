@@ -1156,7 +1156,8 @@ body {
 
 .overlay__actions button {
   flex: 1;
-  padding: 10px 16px;
+  min-width: 0;
+  padding: 10px 14px;
   border: 1px solid var(--ink);
   background: transparent;
   color: var(--ink);
@@ -1165,9 +1166,12 @@ body {
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
   border-radius: 3px;
   transition: all 0.18s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .overlay__actions .--primary { background: var(--ink); color: var(--cream); }
 .overlay__actions .--primary:hover { background: transparent; color: var(--ink); }
