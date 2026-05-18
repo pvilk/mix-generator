@@ -87,6 +87,14 @@
   let autoSkipsInARow = 0;
   let autoSkipInProgress = false;
 
+  // Station-switching gate: while a station change is in flight, the SDK
+  // keeps firing player_state_changed events for the PREVIOUS station's
+  // track until Spotify finishes loading the new context (200-800ms).
+  // Without this gate, the old track gets rendered under the new station's
+  // nameplate ("BAROQUE CHAMBERS playing Trance Wax").
+  let stationSwitching = false;
+  let switchingToUri = null;
+
   // ── Chapter auto-regen state ──
   // After N listen-throughs on a station, background-trigger MCP to create a
   // fresh playlist with the same vibe. We DERIVE the counter from the
@@ -1012,6 +1020,23 @@
       if (!state) return;
       const { paused, position, duration, track_window } = state;
 
+      // ─── STATION-SWITCH GATE ────────────────────────────────────────
+      // After setStation(), the SDK keeps reporting the OLD context's
+      // track for a moment. Ignore those events so we don't render the
+      // previous station's music under the new nameplate. Clear the gate
+      // as soon as we see a state from the expected new context.
+      if (stationSwitching) {
+        const ctxUri = state.context && state.context.uri;
+        if (ctxUri && switchingToUri && ctxUri === switchingToUri) {
+          console.log('[switch] new context arrived:', ctxUri);
+          stationSwitching = false;
+          switchingToUri = null;
+        } else {
+          // Still on the previous context — ignore this update
+          return;
+        }
+      }
+
       // ─── AUTO-SKIP BLACKLIST ────────────────────────────────────────
       // Before we render anything, check if this track is one Phil has
       // skipped before (or is by a disfavored artist). If so, jump to the
@@ -1239,14 +1264,20 @@
     activeId = id;
     lastSeenTrack = null;
     currentTrack = null;
+    stationSwitching = true;
+    switchingToUri = mix.spotifyUri || null;
 
     renderStation(mix);
 
-    // Optimistic blank state
+    // Blank the card text + art until the new context's first track arrives.
+    // Spotify's SDK lags 200-800ms behind the play API call, so leaving the
+    // old text in place causes "BAROQUE CHAMBERS playing Trance Wax".
     els.cardProgress.style.width = '0%';
     els.cardArt.classList.add('--swapping');
     els.cardArt.classList.remove('--has-art');
     els.cardArt.style.backgroundImage = '';
+    els.cardTitle.textContent = 'Loading…';
+    els.cardArtist.textContent = mix.title;
     els.cardTitle.classList.add('--swapping');
     els.cardArtist.classList.add('--swapping');
     setPlayingVisual(true);
