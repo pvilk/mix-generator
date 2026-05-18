@@ -311,7 +311,7 @@ body {
     transparent 85%
   );
   filter: blur(1px);
-  animation: sun-pulse 9s ease-in-out infinite;
+  animation: sun-drift 140s ease-in-out infinite;
 }
 
 .sunset__sun-halo {
@@ -330,11 +330,18 @@ body {
   );
   filter: blur(20px);
   pointer-events: none;
+  animation: sun-halo-drift 140s ease-in-out infinite;
 }
 
-@keyframes sun-pulse {
-  0%, 100% { transform: translateX(-50%) scale(1); opacity: 1; }
-  50%      { transform: translateX(-50%) scale(1.03); opacity: 0.95; }
+/* very slow vertical drift + subtle pulse, sun rises ~8vh then sets again */
+@keyframes sun-drift {
+  0%, 100% { transform: translate(-50%, 0) scale(1);    opacity: 1;    }
+  50%      { transform: translate(-50%, -8vh) scale(1.03); opacity: 0.97; }
+}
+
+@keyframes sun-halo-drift {
+  0%, 100% { transform: translate(-50%, 0);    }
+  50%      { transform: translate(-50%, -8vh); }
 }
 
 .sunset__cloud {
