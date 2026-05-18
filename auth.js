@@ -68,6 +68,12 @@
     const id = getClientId();
     if (!id) throw new Error('clientId missing');
 
+    // Clear stale tokens before redirecting — so when we come back, the
+    // saveTokens() call writes a fresh token regardless of what was there.
+    // (Doesn't fix Spotify's silent re-grant of old scopes — but eliminates
+    // the "is the new token actually being used?" ambiguity.)
+    localStorage.removeItem(LS.tokens);
+
     const verifier = randomString(64);
     const challenge = base64url(await sha256(verifier));
     const state = randomString(16);
