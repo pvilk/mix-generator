@@ -116,15 +116,19 @@
         <span class="dj__kicker">DJ · Request</span>
         <span class="dj__hint">⌘K</span>
       </div>
-      <input
-        class="dj__input"
-        id="dj-input"
-        type="text"
-        placeholder="Tell the DJ what to play…"
-        autocomplete="off"
-        autocorrect="off"
-        spellcheck="false"
-      />
+      <div class="dj__input-row">
+        <input
+          class="dj__input"
+          id="dj-input"
+          type="text"
+          placeholder="Tell the DJ what to play…"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+        />
+        <button class="dj__dice" id="dj-dice" type="button" aria-label="Roll a random station idea" title="Roll a station idea">🎲</button>
+      </div>
+      <div class="dj__roll-hint" id="dj-roll-hint" hidden></div>
       <div class="dj__status" id="dj-status"></div>
     </form>
   </div>

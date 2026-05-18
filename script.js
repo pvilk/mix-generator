@@ -30,6 +30,8 @@
     djBackdrop: document.getElementById('dj-backdrop'),
     djForm: document.getElementById('dj-form'),
     djInput: document.getElementById('dj-input'),
+    djDice: document.getElementById('dj-dice'),
+    djRollHint: document.getElementById('dj-roll-hint'),
     djStatus: document.getElementById('dj-status'),
     overlay: document.getElementById('overlay'),
     overlayClose: document.getElementById('overlay-close'),
@@ -1920,8 +1922,119 @@
     els.djInput.disabled = false;
     els.djStatus.textContent = '';
     els.djStatus.className = 'dj__status';
+    if (els.djRollHint) {
+      els.djRollHint.hidden = true;
+      els.djRollHint.innerHTML = '';
+    }
   }
 
+  // 🎲 Roll a station idea — random prompt from a curated pool spanning
+  // time-of-day, activity, weather, era, geography, mood, genre. Click the
+  // dice to populate the input; click again to reroll; Enter to submit.
+  const STATION_PROMPTS = [
+    // Time-of-day
+    ['Morning',    'Make a station for 6am coffee — slow ambient, Helios, Ólafur Arnalds, no vocals'],
+    ['Focus',      'Build a station for deep work — Tycho-style instrumental electronica, no vocals'],
+    ['Afternoon',  'Station for the 3pm slump — bossa nova, warm Brazilian jazz, Joyce'],
+    ['Sunday',     'Make a Sunday morning station — slow folk, Big Thief, Bon Iver, no anthems'],
+    ['Late night', 'Late-night reading station — neoclassical, Max Richter, Nils Frahm'],
+
+    // Activity
+    ['Cooking',    'Station for cooking dinner — tropicalia, Os Mutantes, Caetano Veloso'],
+    ['Workout',    'Build a gym station — house + breakbeat, 120-130 BPM, no vocals'],
+    ['Writing',    'Station for long writing sessions — instrumental ambient drone, no rhythm'],
+    ['Hosting',    'Station for hosting dinner — listening-bar jazz + soul, conversation-friendly'],
+    ['Travel',     'Station for long flights — slow ambient, William Basinski, quiet Aphex Twin'],
+    ['Driving',    'Station for cross-country drives — alt-country, Lucinda Williams, Wilco'],
+    ['Garden',     'Station for puttering in the garden — sunny psych-folk, Connan Mockasin, Real Estate'],
+    ['Wind-down',  'Station for the last hour before bed — soft ambient, Brian Eno, Stars of the Lid'],
+
+    // Classical
+    ['Classical',  'Build a classical station — Bach, Chopin, Debussy, romantic-era piano'],
+    ['Classical',  'Station for modern classical — Max Richter, Nils Frahm, Ólafur Arnalds, Hauschka'],
+    ['Classical',  'Station for minimalist classical — Philip Glass, Steve Reich, Arvo Pärt, John Adams'],
+    ['Classical',  'Build a baroque station — Bach cello suites, Vivaldi, Handel, Pachelbel'],
+    ['Classical',  'Station for cinematic orchestra — Jóhann Jóhannsson, Max Richter, Hans Zimmer'],
+
+    // Weather
+    ['Rainy day',  'Station for rainy afternoons — sad indie folk, Mitski, Adrianne Lenker'],
+    ['Storm',      'Station for thunderstorms — dark ambient, Tim Hecker, Stars of the Lid'],
+    ['Snow',       'Station for snow falling — folk + chamber, Sigur Rós, Nils Frahm'],
+    ['Heat',       'Station for hot summer afternoons — dub reggae, King Tubby, Lee Scratch Perry'],
+    ['Fog',        'Station for fog rolling in — slowcore + sad-core, Codeine, Low'],
+
+    // Nostalgia
+    ['90s grunge',     'Build a 90s grunge station — Pearl Jam, Soundgarden, Alice in Chains'],
+    ['2000s indie',    'Station for early 2000s indie — The Strokes, Yeah Yeah Yeahs, Interpol'],
+    ['80s sophistipop', 'Station for 80s sophisti-pop — Sade, Roxy Music, Talk Talk, Prefab Sprout'],
+    ['70s soft rock',  'Station for 70s soft rock — Fleetwood Mac, Carly Simon, Steely Dan'],
+    ['60s folk',       'Station for 60s folk — Joni Mitchell, Nick Drake, Leonard Cohen'],
+    ['Y2K pop',        'Station for early-2000s pop nostalgia — Avril Lavigne, Vanessa Carlton, Michelle Branch'],
+
+    // Geographic
+    ['Tokyo',     'Station for a Tokyo night — city pop, Mariya Takeuchi, Tatsuro Yamashita'],
+    ['Brazil',    'Brazilian dinner station — samba + bossa, Joyce, Os Mutantes, Tom Jobim'],
+    ['Berlin',    'Berlin techno warmup station — slower melodic techno, Tale Of Us, Mind Against'],
+    ['Lisbon',    'Station for a Lisbon afternoon — fado, Mariza, modern Portuguese indie'],
+    ['Paris',     'Station for a Paris café — French chanson, Serge Gainsbourg, Françoise Hardy'],
+    ['Nashville', 'Station for old Nashville — outlaw country, Willie Nelson, Townes Van Zandt'],
+    ['Reykjavik', 'Station for Icelandic ambient — Sigur Rós, múm, Ólafur Arnalds'],
+    ['Lagos',     'Station for Afrobeat — Fela Kuti, Tony Allen, Ebo Taylor'],
+
+    // Mood
+    ['Melancholy', 'Station for melancholy without sadness — Joep Beving, Max Richter, Nils Frahm'],
+    ['Good mood',  'Station for feeling good — Whitney, Real Estate, Connan Mockasin'],
+    ['Heartbreak', 'Station for heartbreak — Phoebe Bridgers, Adrianne Lenker, Big Thief'],
+    ['Energy',     'Station for high energy — Daft Punk, LCD Soundsystem, Justice'],
+    ['Reflective', 'Station for reflective moments — neoclassical + post-rock, Ólafur Arnalds, Sigur Rós'],
+
+    // Discovery
+    ['Discovery',  "Build a station of artists I haven't heard but probably like"],
+    ['Discovery',  'Station that\'s 80% new artists, 20% Sleeping Pandora territory'],
+    ['Discovery',  'Station for "adjacent to what I usually skip" — push my taste sideways'],
+
+    // Genre deep cuts
+    ['Jazz',       'Station for late-night jazz — Bill Evans, Chet Baker, Bill Frisell'],
+    ['Soul',       'Station for old soul — Bill Withers, Curtis Mayfield, Ann Peebles'],
+    ['Folk',       'Station for British folk — Nick Drake, Sandy Denny, Bert Jansch'],
+    ['Hip-hop',    'Station for instrumental hip-hop — Madlib, MF DOOM beats, Nujabes'],
+    ['Shoegaze',   'Station for shoegaze — My Bloody Valentine, Slowdive, Ride'],
+    ['Krautrock',  'Station for krautrock — Neu!, Can, Cluster, Harmonia'],
+    ['Post-rock',  'Station for post-rock — Mogwai, Explosions in the Sky, Godspeed You! Black Emperor'],
+    ['Disco',      'Station for late-70s disco — Chic, Donna Summer, Sister Sledge'],
+
+    // Combo (scene + station)
+    ['+ Forest',    'Make a forest scene + a folk station for it — Iron & Wine, Fleet Foxes, dappled-sunlight folk'],
+    ['+ Basement',  'Make a basement scene + an instrumental hip-hop station — Madlib, MF DOOM'],
+    ['+ Beach',     'Create a midnight-beach scene + a slow downtempo station — Bonobo, Thievery Corporation'],
+    ['+ Train',     'Make a train scene + a station for window-staring — Sufjan Stevens, Iron & Wine'],
+  ];
+
+  let lastDiceIdx = -1;
+  function rollDiceStation() {
+    if (STATION_PROMPTS.length === 0) return;
+    let idx;
+    do {
+      idx = Math.floor(Math.random() * STATION_PROMPTS.length);
+    } while (idx === lastDiceIdx && STATION_PROMPTS.length > 1);
+    lastDiceIdx = idx;
+
+    const [category, text] = STATION_PROMPTS[idx];
+    els.djInput.value = text;
+    els.djInput.focus();
+    els.djInput.setSelectionRange(text.length, text.length);
+
+    if (els.djRollHint) {
+      els.djRollHint.innerHTML = `<span class="--cat">${category}</span>Enter to submit · 🎲 to reroll`;
+      els.djRollHint.hidden = false;
+    }
+
+    els.djDice.classList.remove('--rolling');
+    void els.djDice.offsetWidth;   // restart animation
+    els.djDice.classList.add('--rolling');
+  }
+
+  els.djDice.addEventListener('click', rollDiceStation);
   els.djBackdrop.addEventListener('click', closeDj);
   els.djForm.addEventListener('submit', (e) => { e.preventDefault(); submitDj(); });
 
