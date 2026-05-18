@@ -1146,6 +1146,7 @@
     else if (kind === 'connect') renderConnectOverlay();
     else if (kind === 'settings') renderSettingsOverlay();
     else if (kind === 'wizard') renderWizardStep(getOnboardingStep());
+    else if (kind === 'diagnostic') renderDiagnosticOverlay();
     els.overlay.hidden = false;
   }
   function closeOverlay() { els.overlay.hidden = true; }
@@ -1452,6 +1453,114 @@
     }
   }
 
+  // ── Diagnostic tool — runs all the API calls we depend on and reports each result ──
+  async function renderDiagnosticOverlay() {
+    els.overlayKicker.textContent = 'Diagnostic';
+    els.overlayTitle.textContent = 'Spotify API Health Check';
+    els.overlayBody.innerHTML = `
+      <div class="wizard-body">
+        <p>Running tests against your Spotify tokens + dev app config…</p>
+        <div id="diag-results" style="font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.7; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.04); border: 1px solid rgba(10,7,6,0.15);">
+          <div>Initializing…</div>
+        </div>
+      </div>
+    `;
+    els.overlayActions.innerHTML = '';
+    const close = document.createElement('button');
+    close.className = '--primary';
+    close.textContent = 'Close';
+    close.addEventListener('click', closeOverlay);
+    els.overlayActions.appendChild(close);
+
+    const out = document.getElementById('diag-results');
+    out.innerHTML = '';
+    const log = (msg, ok = null) => {
+      const color = ok === true ? '#1d5a26' : ok === false ? '#7a1d1d' : 'inherit';
+      const icon = ok === true ? '✓' : ok === false ? '✗' : '·';
+      out.insertAdjacentHTML('beforeend', `<div style="color:${color}">${icon} ${msg}</div>`);
+    };
+
+    // 1. Auth state
+    if (!SpotifyAuth.isAuthed()) {
+      log('Not authenticated — connect Spotify first', false);
+      return;
+    }
+    log('Authenticated', true);
+
+    // 2. Token + scopes
+    let token;
+    try {
+      token = await SpotifyAuth.getAccessToken();
+      if (!token) { log('No valid access token (refresh failed)', false); return; }
+      log(`Access token: ${token.slice(0, 8)}…${token.slice(-4)} (length: ${token.length})`, true);
+    } catch (e) {
+      log(`Token fetch failed: ${e.message || e}`, false);
+      return;
+    }
+    const stored = JSON.parse(localStorage.getItem('mixgen.spotify.tokens') || 'null');
+    if (stored && stored.scope) {
+      log(`Granted scopes:`, true);
+      stored.scope.split(' ').forEach((s) => log(`&nbsp;&nbsp;${s}`, true));
+    }
+
+    // Helper to run an API call and log the result
+    async function testApi(label, path, options = {}) {
+      try {
+        const res = await fetch(`https://api.spotify.com/v1${path}`, {
+          ...options,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            ...(options.headers || {}),
+          },
+        });
+        const text = await res.text();
+        if (res.ok) {
+          log(`${label} → ${res.status} OK`, true);
+          return true;
+        } else {
+          const detail = text.slice(0, 200).replace(/\n/g, ' ');
+          log(`${label} → ${res.status} ${detail}`, false);
+          return false;
+        }
+      } catch (e) {
+        log(`${label} → network error: ${e.message || e}`, false);
+        return false;
+      }
+    }
+
+    // 3. Get current user (basic identity check)
+    await testApi('GET /me (your profile)', '/me');
+
+    // 4. Read library (user-library-read)
+    const sampleTrackId = (currentTrack && currentTrack.id)
+      || '11dFghVXANMlKmJXsNCbNl'; // fallback: a stable Spotify track for tests
+    await testApi(`GET /me/tracks/contains (user-library-read)`, `/me/tracks/contains?ids=${sampleTrackId}`);
+
+    // 5. Write library (user-library-modify) — save then unsave so we don't leave junk
+    const writeOk = await testApi(`PUT /me/tracks (user-library-modify)`, `/me/tracks?ids=${sampleTrackId}`, { method: 'PUT' });
+    if (writeOk) {
+      await testApi(`DELETE /me/tracks (cleanup)`, `/me/tracks?ids=${sampleTrackId}`, { method: 'DELETE' });
+    }
+
+    // 6. Read user's playlists (playlist-read-private)
+    await testApi('GET /me/playlists (playlist-read-private)', '/me/playlists?limit=1');
+
+    // 7. Player state (user-read-playback-state)
+    await testApi('GET /me/player (user-read-playback-state)', '/me/player');
+
+    // 8. Active station playlist read (playlist-read-private)
+    const mix = findMix(activeId);
+    if (mix && mix.spotifyUri) {
+      const pid = playlistIdFromUri(mix.spotifyUri);
+      await testApi(`GET /playlists/${pid} (current station)`, `/playlists/${pid}`);
+    }
+
+    log('—');
+    log('Done. Any ✗ red lines show exactly what\'s broken.');
+    log('Most common 403 cause: your Spotify account isn\'t in the dev app\'s "User Management" allowlist.');
+  }
+
   function renderSettingsOverlay() {
     const s = loadSettings();
     els.overlayKicker.textContent = 'Configuration';
@@ -1474,16 +1583,23 @@
         </label>
       </div>
     `;
-    // "Replay welcome tour" link
-    const replay = document.createElement('p');
-    replay.style.cssText = 'margin-top: 18px; font-size: 12px; opacity: 0.7;';
-    replay.innerHTML = `<a href="#" id="replay-onboarding" style="color: var(--ink); text-decoration: underline;">Replay welcome tour</a>`;
-    els.overlayBody.appendChild(replay);
+    // Bottom-of-settings links
+    const links = document.createElement('p');
+    links.style.cssText = 'margin-top: 18px; font-size: 12px; opacity: 0.7; display: flex; gap: 14px; flex-wrap: wrap;';
+    links.innerHTML = `
+      <a href="#" id="replay-onboarding" style="color: var(--ink); text-decoration: underline;">Replay welcome tour</a>
+      <a href="#" id="run-diagnostic" style="color: var(--vinyl-red); text-decoration: underline; font-weight: 600;">Run Spotify diagnostic →</a>
+    `;
+    els.overlayBody.appendChild(links);
     document.getElementById('replay-onboarding').addEventListener('click', (e) => {
       e.preventDefault();
       localStorage.removeItem(LS_ONBOARDED);
       localStorage.setItem(LS_ONBOARDING_STEP, '0');
       openOverlay('wizard');
+    });
+    document.getElementById('run-diagnostic').addEventListener('click', (e) => {
+      e.preventDefault();
+      openOverlay('diagnostic');
     });
 
     els.overlayActions.innerHTML = '';

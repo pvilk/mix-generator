@@ -892,18 +892,20 @@ body {
   font-weight: 400;
 }
 
-.overlay__body ul {
+/* Saved-songs list (Liked Radio Songs overlay) — scoped to .saved-list
+   so the flex layout doesn't leak into the connect overlay or wizard. */
+.overlay__body .saved-list {
   list-style: none; margin: 12px 0; padding: 0;
   display: flex; flex-direction: column; gap: 4px;
 }
-.overlay__body li {
+.overlay__body .saved-list li {
   display: flex; justify-content: space-between;
   padding: 8px 0;
   border-bottom: 1px dashed rgba(10, 7, 6, 0.16);
   font-size: 12px;
   gap: 12px;
 }
-.overlay__body li .station {
+.overlay__body .saved-list li .station {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.14em;
