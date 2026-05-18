@@ -1512,9 +1512,15 @@
 
     let html = `<p>Connects a personal Spotify Developer App so the radio can show the live track + auto-write listened-through tracks to a <strong>Liked Radio Songs</strong> playlist.</p>`;
     if (existingId) {
-      html += `<p style="margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--ink); font-size: 12px; line-height: 1.5;">
-        <strong>Reauthorizing?</strong> If the consent screen doesn't show new permissions, <a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener">remove the app at spotify.com/account/apps</a> first, then click Authorize again.
-      </p>`;
+      html += `<div style="margin-top: 12px; padding: 12px 14px; border: 2px solid var(--vinyl-red); background: rgba(196, 59, 74, 0.08); font-size: 13px; line-height: 1.55;">
+        <strong style="color: var(--vinyl-red); display: block; margin-bottom: 6px;">⚠ Reauthorizing?</strong>
+        Spotify silently re-grants the SAME scopes you approved before — even when this app asks for new ones. If skips aren't removing tracks, or saving to Liked Songs fails:
+        <ol style="margin: 8px 0 4px 18px; padding: 0;">
+          <li>Open <a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener" style="color: var(--vinyl-red); font-weight: 700;">spotify.com/account/apps</a></li>
+          <li>Find <strong>Mix Generator</strong> → click <strong>Remove access</strong></li>
+          <li>Come back and click Authorize below — you'll see the FULL consent screen with all current scopes</li>
+        </ol>
+      </div>`;
     }
     if (onLocalhost) {
       html += `<p style="margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--ink); font-size: 12px;">⚠ Open this page at <code>http://127.0.0.1:8765/</code> instead of <code>localhost</code> — Spotify rejects <code>localhost</code> as a redirect URI.</p>`;

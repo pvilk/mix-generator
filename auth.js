@@ -137,6 +137,19 @@
     localStorage.removeItem(LS.verifier);
     localStorage.removeItem(LS.state);
     cleanUrl();
+    // Log granted scopes so we can verify they match what was requested.
+    // If a scope we asked for is missing, the user needs to revoke the app
+    // at spotify.com/account/apps and reauthorize.
+    if (tokens.scope) {
+      const granted = new Set((tokens.scope || '').split(' '));
+      const requested = SCOPES.split(' ');
+      const missing = requested.filter((s) => !granted.has(s));
+      console.log('[auth] granted scopes:', tokens.scope);
+      if (missing.length > 0) {
+        console.error('[auth] ⚠ MISSING scopes:', missing.join(', '));
+        console.error('[auth] Fix: revoke the app at https://www.spotify.com/account/apps/ then re-authorize');
+      }
+    }
     return tokens;
   }
 
@@ -193,7 +206,11 @@
     if (res.status === 204) return null;
     const text = await res.text();
     if (!res.ok) throw new Error(`Spotify ${res.status}: ${text.slice(0, 200)}`);
-    return text ? JSON.parse(text) : null;
+    if (!text) return null;
+    // Spotify sometimes returns non-JSON success bodies (e.g., a snapshot id
+    // string for shuffle/repeat toggles). Don't crash on those.
+    try { return JSON.parse(text); }
+    catch (e) { return null; }
   }
 
   async function getCurrentUser() {
