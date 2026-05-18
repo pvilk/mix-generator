@@ -462,6 +462,27 @@ const server = http.createServer(async (req, res) => {
       return jsonRes(res, 200, job);
     }
 
+    // POST /active — persist the user's selected station to data.js so a
+    // page refresh returns to whatever they were listening to (instead of
+    // landing on the last DJ-created station forever).
+    if (req.method === 'POST' && req.url === '/active') {
+      const body = await readBody(req);
+      try {
+        const { id } = JSON.parse(body || '{}');
+        if (typeof id !== 'string' || !id) {
+          return jsonRes(res, 400, { error: 'id required' });
+        }
+        const data = readData();
+        const exists = data.playlists.some((p) => p.id === id);
+        if (!exists) return jsonRes(res, 404, { error: 'unknown station id' });
+        data.active = id;
+        writeData(data);
+        return jsonRes(res, 200, { ok: true, active: id });
+      } catch (e) {
+        return jsonRes(res, 400, { error: e.message });
+      }
+    }
+
     // POST /state/sync — back up the browser's listening state to disk
     if (req.method === 'POST' && req.url === '/state/sync') {
       const body = await readBody(req);

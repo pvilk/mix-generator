@@ -1037,6 +1037,13 @@
         }
       }
 
+      // No nameplate auto-reconcile here. The user's station choice is the
+      // source of truth. If Spotify is playing something else (e.g., because
+      // a station-switch's play call didn't take effect), the user sees the
+      // mismatch on the card and can re-click. Auto-snapping the nameplate
+      // back to whatever's playing fights the user and reverts intentional
+      // switches — that bug is worse than the visual mismatch.
+
       // ─── AUTO-SKIP BLACKLIST ────────────────────────────────────────
       // Before we render anything, check if this track is one Phil has
       // skipped before (or is by a disfavored artist). If so, jump to the
@@ -1163,7 +1170,15 @@
   }
 
   async function playStation(mix) {
-    if (!sdkDeviceId) return;
+    if (!sdkDeviceId) {
+      // No SDK device yet — abort and release the switch gate so the next
+      // player_state_changed event can reconcile the UI to whatever is
+      // actually playing instead of staying stuck on the old context.
+      stationSwitching = false;
+      switchingToUri = null;
+      console.warn('[player] playStation aborted: no sdkDeviceId yet');
+      return;
+    }
     try {
       // Find the most-recently-added track so playback starts fresh — fixes
       // the "same songs in the same order" complaint by dropping in at
@@ -1192,6 +1207,11 @@
       }
     } catch (e) {
       console.warn('playStation failed', e);
+      // Don't let a failed play call wedge the switch gate. Releasing it
+      // lets reconcile snap the nameplate back to whatever's actually
+      // playing on the SDK device.
+      stationSwitching = false;
+      switchingToUri = null;
     }
   }
 
@@ -1235,7 +1255,12 @@
     if (!sdkReady || !sdkPlayer) { flashUnavailable(els.ctrlNext); return; }
     optimisticTrackChangeUi();
     try { await sdkPlayer.nextTrack(); }
-    catch (e) { console.warn('skip next failed', e); flashUnavailable(els.ctrlNext); }
+    catch (e) { console.warn('[skip] SDK nextTrack threw, falling back to Web API', e); }
+    // SDK nextTrack silently no-ops when the SDK device has no current
+    // context (e.g., transferred-to-but-not-autoplayed on boot). Verify a
+    // transition actually happened; if not, drive it via the Web API so
+    // the user-facing button always works.
+    await ensureSkipApplied('next');
   }
 
   async function skipPrev() {
@@ -1244,7 +1269,27 @@
     if (!sdkReady || !sdkPlayer) { flashUnavailable(els.ctrlPrev); return; }
     optimisticTrackChangeUi();
     try { await sdkPlayer.previousTrack(); }
-    catch (e) { console.warn('skip prev failed', e); flashUnavailable(els.ctrlPrev); }
+    catch (e) { console.warn('[skip] SDK previousTrack threw, falling back to Web API', e); }
+    await ensureSkipApplied('previous');
+  }
+
+  // After an SDK skip call, wait briefly for player_state_changed to confirm
+  // the transition. If nothing arrives, ask Spotify directly via the Web API
+  // targeting our SDK device — bulletproof against "SDK is current device
+  // but has no live context" states.
+  async function ensureSkipApplied(direction) {
+    const startUri = lastSeenTrack && lastSeenTrack.uri;
+    await new Promise((r) => setTimeout(r, 450));
+    const stillSame = lastSeenTrack && lastSeenTrack.uri === startUri;
+    if (!stillSame) return;
+    try {
+      const path = `/me/player/${direction}${sdkDeviceId ? `?device_id=${sdkDeviceId}` : ''}`;
+      await SpotifyAuth.api(path, { method: 'POST' });
+      console.log(`[skip] Web API fallback fired: ${direction}`);
+    } catch (e) {
+      console.warn(`[skip] Web API ${direction} failed`, e);
+      flashUnavailable(direction === 'next' ? els.ctrlNext : els.ctrlPrev);
+    }
   }
 
   function flashUnavailable(btn) {
@@ -1267,6 +1312,29 @@
     stationSwitching = true;
     switchingToUri = mix.spotifyUri || null;
 
+    // Persist the user's choice so refresh returns to this station instead
+    // of whatever data.active was last set to by the DJ. Fire-and-forget.
+    fetch('/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).catch(() => {});
+
+    // Gate-stuck failsafe: if the SDK never emits a state event with the
+    // new context URI, release the gate after 5s so subsequent state events
+    // can update the card normally. We intentionally do NOT auto-reconcile
+    // the nameplate away from the user's choice — if the play API failed,
+    // they'd rather see the station they picked (and be able to retry) than
+    // get yanked back to the previous one.
+    const switchTokenUri = switchingToUri;
+    setTimeout(() => {
+      if (stationSwitching && switchingToUri === switchTokenUri) {
+        console.warn(`[switch] new context never arrived in 5s for ${mix.id} — releasing gate`);
+        stationSwitching = false;
+        switchingToUri = null;
+      }
+    }, 5000);
+
     renderStation(mix);
 
     // Blank the card text + art until the new context's first track arrives.
@@ -1283,6 +1351,21 @@
     setPlayingVisual(true);
 
     if (sdkReady && mix.spotifyUri) {
+      // Don't transfer first when the SDK is already active — transfer
+      // with play:false PAUSES the active SDK device, then the play call
+      // races to wake it up AND switch context, which fails. If the SDK
+      // is already the active device (music currently playing through
+      // the browser), the play call alone is sufficient. If it isn't
+      // active, transfer-then-play is needed. Check state to decide.
+      let needTransfer = true;
+      try {
+        const liveState = await sdkPlayer.getCurrentState();
+        if (liveState && liveState.track_window && liveState.track_window.current_track) {
+          needTransfer = false;
+        }
+      } catch (e) { /* assume transfer is needed */ }
+
+      if (needTransfer) await transferToOurDevice(false);
       await playStation(mix);
     } else if (!SpotifyAuth.isAuthed()) {
       openOverlay('connect');
@@ -2308,6 +2391,10 @@
         alert('Spotify auth failed: ' + (e.message || e));
       }
     }
+    // Render the user's selected station. data.active is now persisted on
+    // every station switch (POST /active), so this always reflects their
+    // last manual choice. No reconcile — we trust the user, not Spotify
+    // state drift.
     const mix = findMix(activeId);
     if (mix) renderStation(mix);
     renderHotcorner();
