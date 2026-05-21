@@ -705,7 +705,7 @@
   // sessions, fire regen now.
   function maybeFireOverdueChapter() {
     if (!SpotifyAuth.isAuthed()) return;
-    for (const mix of mixes) {
+    for (const mix of data.playlists) {
       const n = effectiveChapterCount(mix.id);
       if (n >= CHAPTER_REGEN_THRESHOLD
           && mix.spotifyUri
